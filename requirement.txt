@@ -1,0 +1,8 @@
+streamlit
+pandas
+plotly
+pdfplumber
+python-docx
+SpeechRecognition
+pydub
+moviepy
