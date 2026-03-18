@@ -1,6 +1,7 @@
 import random
 import re
 import tempfile
+import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from io import BytesIO
@@ -44,6 +45,7 @@ from utils.storage import (
     save_attempt,
     save_questions,
 )
+from analytics import render_dashboard
 
 APP_TITLE = "SmartQuizzer Pro"
 STOPWORDS = {
@@ -299,42 +301,111 @@ if "auth_user" not in st.session_state:
 st.markdown(
     """
     <style>
-        :root {
-            --surface: #f4f7fb;
-            --card: #ffffff;
-            --ink: #0f172a;
-            --muted: #475467;
-            --accent: #0e7490;
-            --soft: #dbeafe;
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;800&display=swap');
+        
+        html, body, [class*="css"]  {
+            font-family: 'Poppins', sans-serif;
         }
+
         .stApp {
-            background: radial-gradient(circle at top right, #e0f2fe 0%, #f8fafc 45%, #eef2ff 100%);
+            background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
         }
+        
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        /* Glassmorphism Block Container */
+        .block-container {
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            padding: 40px !important;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+            margin-top: 2rem;
+            margin-bottom: 2rem;
+        }
+
         .hero {
-            background: linear-gradient(115deg, #312e81 0%, #b45309 55%, #dc2626 100%);
+            background: linear-gradient(115deg, #ff0844 0%, #ffb199 100%);
             color: white;
-            border-radius: 16px;
-            padding: 20px 24px;
-            margin-bottom: 18px;
-            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+            border-radius: 20px;
+            padding: 30px 40px;
+            margin-bottom: 24px;
+            box-shadow: 0 10px 40px rgba(255, 8, 68, 0.3);
+            text-align: center;
         }
+        
         .hero h1 {
             margin: 0;
-            font-size: 2rem;
+            font-size: 3rem;
             font-weight: 800;
-            letter-spacing: 0.2px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
         }
         .hero p {
-            margin: 8px 0 0;
-            opacity: 0.92;
-            font-size: 0.98rem;
+            margin: 10px 0 0;
+            opacity: 0.95;
+            font-size: 1.1rem;
+            font-weight: 300;
         }
+        
         .card {
-            background: var(--card);
-            border: 1px solid #dbe2ea;
-            border-radius: 14px;
-            padding: 14px;
-            box-shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+            background: rgba(255, 255, 255, 0.65);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.05);
+            transition: transform 0.3s ease;
+        }
+        .card:hover {
+            transform: scale(1.02);
+            box-shadow: 0 15px 40px rgba(31, 38, 135, 0.15);
+        }
+        
+        /* Vibrant Buttons */
+        div.stButton > button {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white !important;
+            border: none;
+            border-radius: 50px;
+            padding: 12px 28px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            box-shadow: 0 4px 15px rgba(118, 75, 162, 0.4);
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        div.stButton > button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(118, 75, 162, 0.6);
+            color: white !important;
+        }
+
+        /* Input fields */
+        .stTextInput>div>div>input, .stTextArea textarea {
+            border-radius: 12px;
+            background: rgba(255,255,255,0.7) !important;
+            border: 2px solid rgba(255,255,255,0.9) !important;
+            transition: all 0.3s ease;
+        }
+        .stTextInput>div>div>input:focus, .stTextArea textarea:focus {
+            box-shadow: 0 0 15px rgba(118, 75, 162, 0.3) !important;
+            border-color: #764ba2 !important;
+        }
+        
+        /* Sidebar Styling */
+        [data-testid="stSidebar"] {
+            background: rgba(255, 255, 255, 0.3);
+            backdrop-filter: blur(15px);
+            border-right: 1px solid rgba(255, 255, 255, 0.5);
         }
     </style>
     """,
@@ -375,7 +446,16 @@ if st.session_state.auth_user is None:
                         st.error(message)
     st.stop()
 
-menu = st.sidebar.radio("Navigate", ["Generate Quiz", "Take Quiz", "Analytics Dashboard"])
+if "menu_selection" not in st.session_state:
+    st.session_state.menu_selection = "Generate Quiz"
+
+def update_menu():
+    st.session_state.menu_selection = st.session_state.menu_radio
+
+menu_opts = ["Generate Quiz", "Take Quiz", "Analytics Dashboard"]
+curr_idx = menu_opts.index(st.session_state.menu_selection) if st.session_state.menu_selection in menu_opts else 0
+
+menu = st.sidebar.radio("Navigate", menu_opts, index=curr_idx, key="menu_radio", on_change=update_menu)
 candidate = st.session_state.auth_user
 history = load_attempts(limit=200)
 
@@ -486,6 +566,9 @@ if menu == "Generate Quiz":
                     st.success(f"Quiz generated successfully. Quiz ID: {quiz_id}")
                     with st.expander("Extracted Content Preview"):
                         st.write(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
+                    time.sleep(1.5)
+                    st.session_state.menu_selection = "Take Quiz"
+                    st.rerun()
 
 elif menu == "Take Quiz":
     st.subheader("Interactive Quiz")
@@ -571,65 +654,4 @@ elif menu == "Take Quiz":
 elif menu == "Analytics Dashboard":
     st.subheader("Quiz Analytics Dashboard")
     dataset = load_attempts(limit=200)
-    rows = dataset["recent"]
-    if not rows:
-        st.info("No attempts yet. Submit a quiz to populate analytics.")
-    else:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Attempts", len(rows))
-        with col2:
-            best_pct = round(max(dataset["percentages"]), 2) if dataset["percentages"] else 0
-            st.metric("Best Accuracy", f"{best_pct}%")
-        with col3:
-            avg_pct = round(sum(dataset["percentages"]) / len(dataset["percentages"]), 2)
-            st.metric("Average Accuracy", f"{avg_pct}%")
-
-        progress_df = pd.DataFrame(
-            {"Attempt": list(range(1, len(dataset["percentages"]) + 1)), "Accuracy": dataset["percentages"]}
-        )
-        st.plotly_chart(
-            px.line(progress_df, x="Attempt", y="Accuracy", markers=True, title="Accuracy Trend", template="plotly_white"),
-            use_container_width=True,
-        )
-
-        st.plotly_chart(
-            px.histogram(
-                pd.DataFrame(rows),
-                x="percentage",
-                nbins=10,
-                title="Score Percentage Distribution",
-                labels={"percentage": "Accuracy (%)"},
-                template="plotly_white",
-            ),
-            use_container_width=True,
-        )
-
-        breakdown = defaultdict(lambda: {"correct": 0, "total": 0})
-        for row in rows:
-            for diff, values in row.get("difficulty_breakdown", {}).items():
-                breakdown[diff]["correct"] += values.get("correct", 0)
-                breakdown[diff]["total"] += values.get("total", 0)
-
-        if breakdown:
-            diff_rows = []
-            for diff, values in breakdown.items():
-                accuracy = (values["correct"] / values["total"] * 100) if values["total"] else 0
-                diff_rows.append({"Difficulty": diff.title(), "Accuracy": round(accuracy, 2)})
-            diff_df = pd.DataFrame(diff_rows)
-            st.plotly_chart(
-                px.bar(diff_df, x="Difficulty", y="Accuracy", color="Difficulty", title="Difficulty Breakdown"),
-                use_container_width=True,
-            )
-
-        table = pd.DataFrame(rows)[["user_name", "score", "total", "percentage", "submitted_at"]]
-        table = table.rename(
-            columns={
-                "user_name": "User",
-                "score": "Score",
-                "total": "Total",
-                "percentage": "Accuracy %",
-                "submitted_at": "Submitted At (UTC)",
-            }
-        )
-        st.dataframe(table, use_container_width=True, hide_index=True)
+    render_dashboard(dataset)
