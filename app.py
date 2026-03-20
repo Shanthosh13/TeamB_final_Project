@@ -179,13 +179,25 @@ def build_mcq(sentence, keyword_bank, difficulty):
     answer = pick_answer_token(sentence)
     if not answer:
         return None
-    prompt = re.sub(rf"\b{re.escape(answer)}\b", "_____", sentence, count=1, flags=re.IGNORECASE)
+
+    prompt = re.sub(
+        rf"\b{re.escape(answer)}\b",
+        "_____",
+        sentence,
+        count=1,
+        flags=re.IGNORECASE
+    )
+
     distractors = [w.title() for w in keyword_bank if w.lower() != answer.lower()]
     random.shuffle(distractors)
+
     options = [answer] + distractors[:3]
+
     while len(options) < 4:
         options.append(f"Option {len(options) + 1}")
+
     random.shuffle(options)
+
     return {
         "question": f"Fill in the blank: {prompt}",
         "options": options[:4],
@@ -193,7 +205,6 @@ def build_mcq(sentence, keyword_bank, difficulty):
         "type": "MCQ",
         "difficulty": difficulty.lower(),
     }
-
 
 def build_true_false(sentence, keyword_bank, difficulty):
     answer = "True"
@@ -587,10 +598,12 @@ elif menu == "Take Quiz":
         for idx, question in enumerate(questions, start=1):
             with st.container():
                 st.markdown('<div class="card">', unsafe_allow_html=True)
-                st.markdown(f"**Q{idx}. {question['question']}**")
+                st.markdown(f"### 📝 Question {idx}")
+                st.write(question['question'])
                 st.caption(f"Type: {question['type']} | Difficulty: {question.get('difficulty', 'unknown').title()}")
 
                 if question["type"] in {"MCQ", "True/False"}:
+                    st.write("👉 Choose one option:")
                     answer = st.radio(
                         f"Answer {idx}",
                         question["options"],
@@ -599,6 +612,7 @@ elif menu == "Take Quiz":
                         label_visibility="collapsed",
                     )
                 else:
+                    st.write("✍️ Type your answer:")
                     answer = st.text_input(
                         f"Answer {idx}",
                         key=f"q_{idx}",
@@ -607,12 +621,14 @@ elif menu == "Take Quiz":
                     )
                 st.session_state.answers[idx] = answer
                 st.markdown("</div>", unsafe_allow_html=True)
-                st.write("")
+                st.divider()
 
-        if st.button("Submit Quiz", type="primary", use_container_width=True):
+        st.divider()
+        if st.button("🚀 Submit Quiz", type="primary", use_container_width=True):
             details = []
             difficulty_totals = defaultdict(lambda: {"correct": 0, "total": 0})
             score = 0
+            progress_bar = st.progress(0)
             for idx, question in enumerate(questions, start=1):
                 user_answer = st.session_state.answers.get(idx)
                 correct = evaluate_answer(question, user_answer)
@@ -629,8 +645,10 @@ elif menu == "Take Quiz":
                         "user_answer": user_answer,
                         "correct_answer": question["answer"],
                         "is_correct": correct,
+                        
                     }
                 )
+                progress_bar.progress(idx / len(questions))
 
             save_attempt(
                 score=score,
@@ -641,23 +659,27 @@ elif menu == "Take Quiz":
             )
             st.session_state.quiz_submitted = True
             percent = round((score / len(questions)) * 100, 2) if questions else 0.0
-            st.success(f"Score: {score}/{len(questions)} ({percent}%)")
+            st.header(f"🎯 Your Score: {score}/{len(questions)} ({percent}%)")
             if percent >= 80:
                st.balloons()
-               st.success("Excellent performance!")
+               st.success("🔥 Excellent! You're mastering this topic.")
             elif percent >= 50:
-               st.info("Good job! You can improve further.")
+               st.info("👍 Decent performance. Review weak areas.")
             else:
-                st.warning("Keep practicing. Try again!")
+                st.warning("⚠️ Poor score. You need more practice.")
             st.progress(score / len(questions))
 
-            with st.expander("Review Answers", expanded=True):
-                for item in details:
-                    verdict = "Correct" if item["is_correct"] else "Incorrect"
-                    st.write(f"Q{item['index']}: {verdict}")
-                    st.write(f"Your answer: {item['user_answer']}")
+            with st.expander("📊 Review Answers", expanded=True):
+               for item in details:
+                    if item["is_correct"]:
+                        st.success(f"Q{item['index']} - Correct ✅")
+                    else:
+                        st.error(f"Q{item['index']} - Incorrect ❌")
+
+                    st.write(f"**Your answer:** {item['user_answer']}")
                     if not item["is_correct"]:
-                        st.write(f"Correct answer: {item['correct_answer']}")
+                        st.write(f"**Correct answer:** {item['correct_answer']}")
+
                     st.divider()
 
 elif menu == "Analytics Dashboard":
