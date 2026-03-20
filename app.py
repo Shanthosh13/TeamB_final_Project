@@ -473,7 +473,10 @@ with st.sidebar:
     st.metric("Average Accuracy", f"{avg_accuracy}%")
 
 if menu == "Generate Quiz":
-    st.subheader("Input Content")
+    st.header("📄 Upload Study Material")
+    st.write("Upload your notes or paste text to generate a quiz easily.")
+    st.divider()
+    st.subheader("📥 Input Content")
     input_mode = st.radio("Select Input Type", ["Paste Text", "Upload File"], horizontal=True)
     typed_text = ""
     uploaded = None
@@ -508,7 +511,7 @@ if menu == "Generate Quiz":
         if not HAS_OCR:
             st.caption("Scanned PDF OCR is disabled. Install `pytesseract` and `pdf2image` to enable it.")
 
-    st.subheader("Quiz Generation Controls")
+    st.subheader("⚙️ Quiz Settings")
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
     with ctrl_col1:
         question_count = st.slider("Number of questions", min_value=3, max_value=25, value=8)
@@ -520,7 +523,7 @@ if menu == "Generate Quiz":
             ["Multiple Choice Questions (MCQ)", "True/False", "Short Answer"],
         )
 
-    if st.button("Generate Quiz", type="primary", use_container_width=True):
+    if st.button("🚀 Generate Quiz", type="primary", use_container_width=True):
         with st.spinner("Extracting and processing content..."):
             processing_failed = False
             try:
@@ -566,12 +569,11 @@ if menu == "Generate Quiz":
                     st.success(f"Quiz generated successfully. Quiz ID: {quiz_id}")
                     with st.expander("Extracted Content Preview"):
                         st.write(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
-                    time.sleep(1.5)
-                    st.session_state.menu_selection = "Take Quiz"
-                    st.rerun()
+                    st.success("Quiz ready! Go to 'Take Quiz' from the sidebar.")
 
 elif menu == "Take Quiz":
-    st.subheader("Interactive Quiz")
+    st.header("🧠 Take Your Quiz")
+    st.write("Answer the questions below and submit to see your score.")
     quiz = load_questions()
     questions = quiz["questions"] if isinstance(quiz, dict) else quiz
     quiz_meta = quiz.get("metadata", {}) if isinstance(quiz, dict) else {}
@@ -640,6 +642,13 @@ elif menu == "Take Quiz":
             st.session_state.quiz_submitted = True
             percent = round((score / len(questions)) * 100, 2) if questions else 0.0
             st.success(f"Score: {score}/{len(questions)} ({percent}%)")
+            if percent >= 80:
+               st.balloons()
+               st.success("Excellent performance!")
+            elif percent >= 50:
+               st.info("Good job! You can improve further.")
+            else:
+                st.warning("Keep practicing. Try again!")
             st.progress(score / len(questions))
 
             with st.expander("Review Answers", expanded=True):
