@@ -6,12 +6,19 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-
-import pandas as pd
 import pdfplumber
-import plotly.express as px
 import streamlit as st
 from docx import Document
+import os
+import json
+from dotenv import load_dotenv
+from groq import Groq
+import math
+
+load_dotenv()
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+
 try:
     from moviepy import VideoFileClip
 except ImportError:
@@ -235,44 +242,166 @@ def build_short_answer(sentence, difficulty):
     }
 
 
+def chunk_text(text, max_chars=12000):
+    """
+    Splits text into chunks, respecting paragraph breaks where possible,
+    to ensure we don't exceed API token limits.
+    """
+    paragraphs = text.split('\n')
+    chunks = []
+    current_chunk = ""
+    
+    for p in paragraphs:
+        # If adding the next paragraph keeps us under the limit, add it
+        if len(current_chunk) + len(p) < max_chars:
+            current_chunk += p + "\n"
+        else:
+            # Otherwise, save the current chunk and start a new one
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            
+            # Edge case: What if a single paragraph is massive? Force split it.
+            if len(p) > max_chars:
+                for i in range(0, len(p), max_chars):
+                    chunks.append(p[i:i+max_chars])
+                current_chunk = ""
+            else:
+                current_chunk = p + "\n"
+                
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+        
+    return chunks
+
+
 def generate_quiz(text, question_count, difficulty, question_type):
-    sentences = split_sentences(text)
-    if not sentences:
-        return []
-    pool = sentence_pool(sentences, difficulty)
-    random.shuffle(pool)
-    keyword_bank = extract_keywords(text)
-
-    builders = {
-        "Multiple Choice Questions (MCQ)": build_mcq,
-        "True/False": build_true_false,
-        "Short Answer": build_short_answer,
-    }
-
-    questions = []
-    builder = builders[question_type]
-    for sentence in pool:
-        question = builder(sentence, keyword_bank, difficulty) if question_type != "Short Answer" else builder(sentence, difficulty)
-        if question:
-            questions.append(question)
-        if len(questions) >= question_count:
+    """
+    Generates quiz questions using the Groq API with chunking and rate-limit handling.
+    """
+    chunks = chunk_text(text, max_chars=12000) # Safe limit for ~6000 TPM
+    all_questions = []
+    
+    # Figure out roughly how many questions we need per chunk to hit the user's total
+    questions_per_chunk = math.ceil(question_count / len(chunks))
+    
+    for i, chunk in enumerate(chunks):
+        # Stop if we already have enough questions
+        if len(all_questions) >= question_count:
             break
-    return questions
+            
+        # Determine how many questions to ask for in this specific request
+        requested_count = min(questions_per_chunk, question_count - len(all_questions))
+        
+        prompt = f"""
+        You are an expert educator. Create a {requested_count}-question {question_type} quiz based on the text below.
+        The difficulty level should be {difficulty}.
+
+        Text:
+        \"\"\"{chunk}\"\"\"
+
+        Output the result strictly in the following JSON format. Ensure the key is "questions" and the value is a list of objects.
+        {{
+            "questions": [
+                {{
+                    "question": "The question text",
+                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+                    "answer": "The correct answer",
+                    "type": "{question_type}",
+                    "difficulty": "{difficulty.lower()}"
+                }}
+            ]
+        }}
+        """
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant designed to output strict JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3 
+                )
+                
+                result_json = json.loads(response.choices[0].message.content)
+                chunk_questions = result_json.get("questions", [])
+                all_questions.extend(chunk_questions)
+                
+                # Success! Break out of the retry loop and move to the next chunk
+                break 
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                # If we hit a rate limit (413 or 429), pause for 60 seconds
+                if "rate_limit" in error_msg or "429" in error_msg or "413" in error_msg or "too large" in error_msg:
+                    st.warning(f"⏳ API rate limit reached on chunk {i+1}/{len(chunks)}. Waiting 60 seconds to cool down... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(60) 
+                else:
+                    st.error(f"Error generating quiz from chunk {i+1}: {e}")
+                    break # Break on non-rate-limit errors so we don't infinitely retry a bad prompt
+
+    # Return exactly the number of questions the user asked for (trim excess if any)
+    return all_questions[:question_count]
 
 
-def evaluate_answer(question, user_answer):
+def evaluate_short_answer(question, correct_answer, user_answer):
+    """
+    Uses Groq to evaluate subjective short answers semantically.
+    """
+    prompt = f"""
+    You are an educator grading a short answer question.
+    Question: "{question}"
+    Correct Answer/Rubric: "{correct_answer}"
+    Student's Answer: "{user_answer}"
+    
+    Assess if the student's answer is correct based on the core meaning, even if phrased differently.
+    Return JSON only: {{"is_correct": true/false, "feedback": "Short explanation of why"}}
+    """
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant", # Smaller, faster model is fine for grading
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {"is_correct": False, "feedback": f"Evaluation error: {str(e)}"}
+
+
+def evaluate_answer(question_data, user_answer):
+    """
+    Evaluates a single user's answer against the question data.
+    Returns True if correct, False otherwise.
+    """
+    # Handle cases where the user left the answer blank
     if user_answer is None:
-        return False
-    if question["type"] in {"MCQ", "True/False"}:
-        return str(user_answer).strip().lower() == str(question["answer"]).strip().lower()
+        user_answer = ""
+        
+    user_ans = str(user_answer).strip()
+    correct_ans = str(question_data.get("answer", ""))
+    q_type = question_data.get("type", "")
 
-    expected = normalize_text(question["answer"]).lower()
-    response = normalize_text(str(user_answer)).lower()
-    expected_tokens = [w for w in expected.split() if w not in STOPWORDS]
-    if not expected_tokens:
-        return False
-    overlap = sum(1 for token in expected_tokens if token in response)
-    return overlap / max(1, len(expected_tokens)) >= 0.35
+    # Exact match logic for Objective questions
+    if q_type in ["Multiple Choice Questions (MCQ)", "True/False", "MCQ"]:
+        return user_ans.lower() == correct_ans.lower()
+    
+    # LLM Evaluation logic for Subjective questions
+    elif q_type == "Short Answer":
+        if not user_ans: # If blank, it's automatically wrong
+            return False
+            
+        eval_result = evaluate_short_answer(
+            question=question_data["question"],
+            correct_answer=correct_ans,
+            user_answer=user_ans
+        )
+        return eval_result.get("is_correct", False)
+        
+    return False
 
 
 def extract_input_text(input_mode, typed_text, uploaded_file):
@@ -621,12 +750,13 @@ elif menu == "Take Quiz":
         )
 
         # Answer Input
-        if question["type"] in {"MCQ", "True/False"}:
+        if question["type"] in {"Multiple Choice Questions (MCQ)", "MCQ", "True/False"}:
             answer = st.radio(
-                "Choose your answer:",
+                f"Answer {idx}",
                 question["options"],
                 index=None,
-                key=f"q_{idx}"
+                key=f"q_{idx}",
+                label_visibility="collapsed",
             )
         else:
             answer = st.text_input(
