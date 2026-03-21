@@ -179,13 +179,25 @@ def build_mcq(sentence, keyword_bank, difficulty):
     answer = pick_answer_token(sentence)
     if not answer:
         return None
-    prompt = re.sub(rf"\b{re.escape(answer)}\b", "_____", sentence, count=1, flags=re.IGNORECASE)
+
+    prompt = re.sub(
+        rf"\b{re.escape(answer)}\b",
+        "_____",
+        sentence,
+        count=1,
+        flags=re.IGNORECASE
+    )
+
     distractors = [w.title() for w in keyword_bank if w.lower() != answer.lower()]
     random.shuffle(distractors)
+
     options = [answer] + distractors[:3]
+
     while len(options) < 4:
         options.append(f"Option {len(options) + 1}")
+
     random.shuffle(options)
+
     return {
         "question": f"Fill in the blank: {prompt}",
         "options": options[:4],
@@ -193,7 +205,6 @@ def build_mcq(sentence, keyword_bank, difficulty):
         "type": "MCQ",
         "difficulty": difficulty.lower(),
     }
-
 
 def build_true_false(sentence, keyword_bank, difficulty):
     answer = "True"
@@ -294,6 +305,9 @@ if "quiz_submitted" not in st.session_state:
 
 if "answers" not in st.session_state:
     st.session_state.answers = {}
+
+if "current_q" not in st.session_state:
+    st.session_state.current_q = 0
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -573,7 +587,8 @@ if menu == "Generate Quiz":
 
 elif menu == "Take Quiz":
     st.header("🧠 Take Your Quiz")
-    st.write("Answer the questions below and submit to see your score.")
+    st.write("Answer step-by-step and submit at the end.")
+
     quiz = load_questions()
     questions = quiz["questions"] if isinstance(quiz, dict) else quiz
     quiz_meta = quiz.get("metadata", {}) if isinstance(quiz, dict) else {}
@@ -584,81 +599,138 @@ elif menu == "Take Quiz":
         st.caption(
             f"Questions: {len(questions)} | Type: {quiz_meta.get('question_type', 'N/A')} | Difficulty: {quiz_meta.get('difficulty', 'N/A')}"
         )
-        for idx, question in enumerate(questions, start=1):
-            with st.container():
-                st.markdown('<div class="card">', unsafe_allow_html=True)
-                st.markdown(f"**Q{idx}. {question['question']}**")
-                st.caption(f"Type: {question['type']} | Difficulty: {question.get('difficulty', 'unknown').title()}")
 
-                if question["type"] in {"MCQ", "True/False"}:
-                    answer = st.radio(
-                        f"Answer {idx}",
-                        question["options"],
-                        index=None,
-                        key=f"q_{idx}",
-                        label_visibility="collapsed",
-                    )
-                else:
-                    answer = st.text_input(
-                        f"Answer {idx}",
-                        key=f"q_{idx}",
-                        placeholder="Write your short answer...",
-                        label_visibility="collapsed",
-                    )
-                st.session_state.answers[idx] = answer
-                st.markdown("</div>", unsafe_allow_html=True)
-                st.write("")
+        # Ensure state exists
+        if "current_q" not in st.session_state:
+            st.session_state.current_q = 0
 
-        if st.button("Submit Quiz", type="primary", use_container_width=True):
-            details = []
-            difficulty_totals = defaultdict(lambda: {"correct": 0, "total": 0})
-            score = 0
-            for idx, question in enumerate(questions, start=1):
-                user_answer = st.session_state.answers.get(idx)
-                correct = evaluate_answer(question, user_answer)
-                score += int(correct)
-                diff = question.get("difficulty", "unknown")
-                difficulty_totals[diff]["total"] += 1
-                difficulty_totals[diff]["correct"] += int(correct)
-                details.append(
-                    {
-                        "index": idx,
-                        "question": question["question"],
-                        "type": question["type"],
-                        "difficulty": diff,
+        if "answers" not in st.session_state:
+            st.session_state.answers = {}
+
+        idx = st.session_state.current_q
+        question = questions[idx]
+
+        # Progress
+        st.markdown(f"### 📝 Question {idx + 1} / {len(questions)}")
+        st.progress((idx + 1) / len(questions))
+
+        # Question
+        st.write(question["question"])
+        st.caption(
+            f"Type: {question['type']} | Difficulty: {question.get('difficulty', 'unknown').title()}"
+        )
+
+        # Answer Input
+        if question["type"] in {"MCQ", "True/False"}:
+            answer = st.radio(
+                "Choose your answer:",
+                question["options"],
+                index=None,
+                key=f"q_{idx}"
+            )
+        else:
+            answer = st.text_input(
+                "Your answer:",
+                key=f"q_{idx}"
+            )
+
+        st.session_state.answers[idx] = answer
+
+        # Navigation
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("⬅️ Previous"):
+                if idx > 0:
+                    st.session_state.current_q -= 1
+                    st.rerun()
+
+        with col2:
+            if st.button("Next ➡️"):
+                if idx < len(questions) - 1:
+                    st.session_state.current_q += 1
+                    st.rerun()
+
+        # Submit only on last question
+        if idx == len(questions) - 1:
+            if st.button("🚀 Submit Quiz", type="primary"):
+
+                score = 0
+                details = []
+                difficulty_totals = defaultdict(lambda: {"correct": 0, "total": 0})
+
+                for i, q in enumerate(questions):
+                    user_answer = st.session_state.answers.get(i)
+                    correct = evaluate_answer(q, user_answer)
+                    score += int(correct)
+
+                    diff = q.get("difficulty", "unknown")
+                    difficulty_totals[diff]["total"] += 1
+                    difficulty_totals[diff]["correct"] += int(correct)
+
+                    details.append({
+                        "index": i + 1,
+                        "question": q["question"],
                         "user_answer": user_answer,
-                        "correct_answer": question["answer"],
+                        "correct_answer": q["answer"],
                         "is_correct": correct,
-                    }
+                    })
+
+                percent = round((score / len(questions)) * 100, 2)
+
+                save_attempt(
+                    score=score,
+                    total=len(questions),
+                    user_name=candidate.strip() or "Guest",
+                    details=details,
+                    difficulty_breakdown=dict(difficulty_totals),
                 )
 
-            save_attempt(
-                score=score,
-                total=len(questions),
-                user_name=candidate.strip() or "Guest",
-                details=details,
-                difficulty_breakdown=dict(difficulty_totals),
-            )
-            st.session_state.quiz_submitted = True
-            percent = round((score / len(questions)) * 100, 2) if questions else 0.0
-            st.success(f"Score: {score}/{len(questions)} ({percent}%)")
-            if percent >= 80:
-               st.balloons()
-               st.success("Excellent performance!")
-            elif percent >= 50:
-               st.info("Good job! You can improve further.")
-            else:
-                st.warning("Keep practicing. Try again!")
-            st.progress(score / len(questions))
+                # Reset
+                st.session_state.current_q = 0
 
-            with st.expander("Review Answers", expanded=True):
-                for item in details:
-                    verdict = "Correct" if item["is_correct"] else "Incorrect"
-                    st.write(f"Q{item['index']}: {verdict}")
-                    st.write(f"Your answer: {item['user_answer']}")
-                    if not item["is_correct"]:
-                        st.write(f"Correct answer: {item['correct_answer']}")
-                    st.divider()
+                st.success("Quiz Submitted!")
+
+                # Metrics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Score", f"{score}/{len(questions)}")
+                with col2:
+                    st.metric("Accuracy", f"{percent}%")
+                with col3:
+                    st.metric("Wrong", len(questions) - score)
+
+                # Feedback
+                if percent >= 80:
+                    st.balloons()
+                    st.success("🔥 Excellent performance!")
+                elif percent >= 50:
+                    st.info("👍 Good, but can improve.")
+                else:
+                    st.warning("⚠️ Needs improvement.")
+
+                # Weak Areas
+                weak_areas = []
+                for diff, stats in difficulty_totals.items():
+                    if stats["correct"] / stats["total"] < 0.5:
+                        weak_areas.append(diff)
+
+                if weak_areas:
+                    st.warning(f"⚠️ Weak in: {', '.join(weak_areas)}")
+
+                # Review Answers
+                with st.expander("📊 Review Answers", expanded=True):
+                    for item in details:
+                        if item["is_correct"]:
+                            st.success(f"Q{item['index']} - Correct ✅")
+                        else:
+                            st.error(f"Q{item['index']} - Incorrect ❌")
+
+                        st.write(f"Your answer: {item['user_answer']}")
+                        if not item["is_correct"]:
+                            st.write(f"Correct answer: {item['correct_answer']}")
+
+                        st.divider()
 
 elif menu == "Analytics Dashboard":
     st.subheader("Quiz Analytics Dashboard")

@@ -6,3 +6,7 @@ python-docx
 SpeechRecognition
 pydub
 moviepy
+<<<<<<< HEAD
+=======
+mysql-connector-python
+>>>>>>> b4c2f0c5dc4caf5fbc87a98b69cdc3771cd348d4
