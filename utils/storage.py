@@ -25,50 +25,38 @@ def _column_exists(connection, table, column):
 def init_db():
     with _connect() as connection:
         cursor = connection.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS quizzes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                questions_json TEXT NOT NULL,
-                source_name TEXT,
-                metadata_json TEXT DEFAULT '{}',
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS attempts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_name TEXT NOT NULL,
-                score INTEGER NOT NULL,
-                total INTEGER NOT NULL,
-                percentage REAL NOT NULL,
-                details_json TEXT DEFAULT '[]',
-                difficulty_breakdown_json TEXT DEFAULT '{}',
-                submitted_at TEXT NOT NULL
-            )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
 
-        if not _column_exists(connection, "quizzes", "metadata_json"):
-            cursor.execute("ALTER TABLE quizzes ADD COLUMN metadata_json TEXT DEFAULT '{}'")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quizzes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            questions_json TEXT NOT NULL,
+            source_name TEXT,
+            metadata_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """)
 
-        if not _column_exists(connection, "attempts", "details_json"):
-            cursor.execute("ALTER TABLE attempts ADD COLUMN details_json TEXT DEFAULT '[]'")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_name TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            percentage REAL NOT NULL,
+            details_json TEXT DEFAULT '[]',
+            difficulty_breakdown_json TEXT DEFAULT '{}',
+            submitted_at TEXT NOT NULL
+        )
+        """)
 
-        if not _column_exists(connection, "attempts", "difficulty_breakdown_json"):
-            cursor.execute("ALTER TABLE attempts ADD COLUMN difficulty_breakdown_json TEXT DEFAULT '{}'")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """)
 
         connection.commit()
 
@@ -79,45 +67,37 @@ def _hash_password(password):
 
 def register_user(username, password):
     cleaned = (username or "").strip()
-    if len(cleaned) < 3:
-        return False, "Username must be at least 3 characters."
-    if len(password or "") < 6:
-        return False, "Password must be at least 6 characters."
 
     with _connect() as connection:
         cursor = connection.cursor()
+
         cursor.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (cleaned,))
         if cursor.fetchone():
             return False, "Username already exists."
 
         cursor.execute(
-            """
-            INSERT INTO users (username, password_hash, created_at)
-            VALUES (?, ?, ?)
-            """,
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
             (cleaned, _hash_password(password), datetime.utcnow().isoformat()),
         )
+
         connection.commit()
+
     return True, "Registration successful."
 
 
 def authenticate_user(username, password):
     cleaned = (username or "").strip()
-    if not cleaned or not password:
-        return False, None
 
     with _connect() as connection:
         cursor = connection.cursor()
+
         cursor.execute(
-            """
-            SELECT username, password_hash
-            FROM users
-            WHERE LOWER(username) = LOWER(?)
-            LIMIT 1
-            """,
+            "SELECT username, password_hash FROM users WHERE LOWER(username) = LOWER(?)",
             (cleaned,),
         )
+
         row = cursor.fetchone()
+
         if not row:
             return False, None
 
@@ -129,16 +109,15 @@ def authenticate_user(username, password):
 
 def save_questions(questions, source_name="Uploaded File", metadata=None):
     metadata = metadata or {}
-    created_at = datetime.utcnow().isoformat()
+
     with _connect() as connection:
         cursor = connection.cursor()
+
         cursor.execute(
-            """
-            INSERT INTO quizzes (questions_json, source_name, metadata_json, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (json.dumps(questions), source_name, json.dumps(metadata), created_at),
+            "INSERT INTO quizzes (questions_json, source_name, metadata_json, created_at) VALUES (?, ?, ?, ?)",
+            (json.dumps(questions), source_name, json.dumps(metadata), datetime.utcnow().isoformat()),
         )
+
         connection.commit()
         return cursor.lastrowid
 
@@ -146,15 +125,16 @@ def save_questions(questions, source_name="Uploaded File", metadata=None):
 def load_questions():
     with _connect() as connection:
         cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT questions_json, source_name, metadata_json, created_at
-            FROM quizzes
-            ORDER BY id DESC
-            LIMIT 1
-            """
-        )
+
+        cursor.execute("""
+        SELECT questions_json, source_name, metadata_json, created_at
+        FROM quizzes
+        ORDER BY id DESC
+        LIMIT 1
+        """)
+
         row = cursor.fetchone()
+
         if not row:
             return {"questions": [], "metadata": {}, "source_name": None}
 
@@ -167,17 +147,14 @@ def load_questions():
 
 
 def save_attempt(score, total, user_name="Guest", details=None, difficulty_breakdown=None):
-    details = details or []
-    difficulty_breakdown = difficulty_breakdown or {}
     percentage = (score / total * 100) if total else 0.0
-    submitted_at = datetime.utcnow().isoformat()
+
     with _connect() as connection:
         cursor = connection.cursor()
+
         cursor.execute(
             """
-            INSERT INTO attempts (
-                user_name, score, total, percentage, details_json, difficulty_breakdown_json, submitted_at
-            )
+            INSERT INTO attempts (user_name, score, total, percentage, details_json, difficulty_breakdown_json, submitted_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -185,11 +162,12 @@ def save_attempt(score, total, user_name="Guest", details=None, difficulty_break
                 score,
                 total,
                 percentage,
-                json.dumps(details),
-                json.dumps(difficulty_breakdown),
-                submitted_at,
+                json.dumps(details or []),
+                json.dumps(difficulty_breakdown or {}),
+                datetime.utcnow().isoformat(),
             ),
         )
+
         connection.commit()
         return cursor.lastrowid
 
@@ -197,6 +175,7 @@ def save_attempt(score, total, user_name="Guest", details=None, difficulty_break
 def load_attempts(limit=20):
     with _connect() as connection:
         cursor = connection.cursor()
+
         cursor.execute(
             """
             SELECT user_name, score, total, percentage, details_json, difficulty_breakdown_json, submitted_at
@@ -206,16 +185,16 @@ def load_attempts(limit=20):
             """,
             (limit,),
         )
+
         rows = cursor.fetchall()
 
     percentages = [row["percentage"] for row in rows]
+
     recent = []
     for row in rows:
         item = dict(row)
         item["details"] = json.loads(item.get("details_json") or "[]")
         item["difficulty_breakdown"] = json.loads(item.get("difficulty_breakdown_json") or "{}")
-        item.pop("details_json", None)
-        item.pop("difficulty_breakdown_json", None)
         recent.append(item)
 
     return {
