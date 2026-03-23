@@ -89,28 +89,45 @@ def extract_keywords(text, top_k=80):
 
 def text_from_pdf(file_bytes):
     result = []
+    
     with pdfplumber.open(BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
+            # 1. Extract standard selectable text
             page_text = page.extract_text() or ""
+            
+            # 2. If OCR is available, hunt for images embedded on this specific page
+            if HAS_OCR:
+                for img in page.images:
+                    try:
+                        # Get the bounding box coordinates of the embedded image
+                        bbox = (img["x0"], img["top"], img["x1"], img["bottom"])
+                        
+                        # Crop the page to just that image and convert it to a PIL image
+                        image_crop = page.crop(bbox).to_image(resolution=200).original
+                        
+                        # Run OCR specifically on that cropped image
+                        ocr_text = pytesseract.image_to_string(image_crop)
+                        
+                        if ocr_text.strip():
+                            # Append it cleanly so the AI knows it came from a graphic
+                            page_text += f"\n[Text from Graphic/Image]: {ocr_text.strip()}\n"
+                    except Exception as e:
+                        # Silently skip if the image is corrupted or coordinates are off-page
+                        continue
+
+            # 3. Handle the edge case where the WHOLE page is a single scanned image
+            # (If standard text extraction found nothing, OCR the full page)
+            if not page_text.strip() and HAS_OCR:
+                try:
+                    full_page_img = page.to_image(resolution=200).original
+                    page_text = pytesseract.image_to_string(full_page_img)
+                except Exception:
+                    pass
+
             if page_text.strip():
                 result.append(page_text)
-    extracted = "\n".join(result).strip()
-    if extracted:
-        return extracted
-
-    # Fallback for scanned/image-only PDFs when OCR dependencies are present.
-    if not HAS_OCR:
-        return ""
-    try:
-        images = convert_from_bytes(file_bytes)
-        ocr_pages = []
-        for image in images:
-            page_text = pytesseract.image_to_string(image) or ""
-            if page_text.strip():
-                ocr_pages.append(page_text)
-        return "\n".join(ocr_pages).strip()
-    except Exception:
-        return ""
+                
+    return "\n".join(result).strip()
 
 
 def text_from_docx(file_bytes):
