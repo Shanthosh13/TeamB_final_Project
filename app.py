@@ -6,19 +6,12 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+
+import pandas as pd
 import pdfplumber
+import plotly.express as px
 import streamlit as st
 from docx import Document
-import os
-import json
-from dotenv import load_dotenv
-from groq import Groq
-import math
-
-load_dotenv()
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
-
 try:
     from moviepy import VideoFileClip
 except ImportError:
@@ -242,166 +235,44 @@ def build_short_answer(sentence, difficulty):
     }
 
 
-def chunk_text(text, max_chars=12000):
-    """
-    Splits text into chunks, respecting paragraph breaks where possible,
-    to ensure we don't exceed API token limits.
-    """
-    paragraphs = text.split('\n')
-    chunks = []
-    current_chunk = ""
-    
-    for p in paragraphs:
-        # If adding the next paragraph keeps us under the limit, add it
-        if len(current_chunk) + len(p) < max_chars:
-            current_chunk += p + "\n"
-        else:
-            # Otherwise, save the current chunk and start a new one
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            
-            # Edge case: What if a single paragraph is massive? Force split it.
-            if len(p) > max_chars:
-                for i in range(0, len(p), max_chars):
-                    chunks.append(p[i:i+max_chars])
-                current_chunk = ""
-            else:
-                current_chunk = p + "\n"
-                
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-        
-    return chunks
-
-
 def generate_quiz(text, question_count, difficulty, question_type):
-    """
-    Generates quiz questions using the Groq API with chunking and rate-limit handling.
-    """
-    chunks = chunk_text(text, max_chars=12000) # Safe limit for ~6000 TPM
-    all_questions = []
-    
-    # Figure out roughly how many questions we need per chunk to hit the user's total
-    questions_per_chunk = math.ceil(question_count / len(chunks))
-    
-    for i, chunk in enumerate(chunks):
-        # Stop if we already have enough questions
-        if len(all_questions) >= question_count:
+    sentences = split_sentences(text)
+    if not sentences:
+        return []
+    pool = sentence_pool(sentences, difficulty)
+    random.shuffle(pool)
+    keyword_bank = extract_keywords(text)
+
+    builders = {
+        "Multiple Choice Questions (MCQ)": build_mcq,
+        "True/False": build_true_false,
+        "Short Answer": build_short_answer,
+    }
+
+    questions = []
+    builder = builders[question_type]
+    for sentence in pool:
+        question = builder(sentence, keyword_bank, difficulty) if question_type != "Short Answer" else builder(sentence, difficulty)
+        if question:
+            questions.append(question)
+        if len(questions) >= question_count:
             break
-            
-        # Determine how many questions to ask for in this specific request
-        requested_count = min(questions_per_chunk, question_count - len(all_questions))
-        
-        prompt = f"""
-        You are an expert educator. Create a {requested_count}-question {question_type} quiz based on the text below.
-        The difficulty level should be {difficulty}.
-
-        Text:
-        \"\"\"{chunk}\"\"\"
-
-        Output the result strictly in the following JSON format. Ensure the key is "questions" and the value is a list of objects.
-        {{
-            "questions": [
-                {{
-                    "question": "The question text",
-                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-                    "answer": "The correct answer",
-                    "type": "{question_type}",
-                    "difficulty": "{difficulty.lower()}"
-                }}
-            ]
-        }}
-        """
-
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant designed to output strict JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.3 
-                )
-                
-                result_json = json.loads(response.choices[0].message.content)
-                chunk_questions = result_json.get("questions", [])
-                all_questions.extend(chunk_questions)
-                
-                # Success! Break out of the retry loop and move to the next chunk
-                break 
-                
-            except Exception as e:
-                error_msg = str(e).lower()
-                # If we hit a rate limit (413 or 429), pause for 60 seconds
-                if "rate_limit" in error_msg or "429" in error_msg or "413" in error_msg or "too large" in error_msg:
-                    st.warning(f"⏳ API rate limit reached on chunk {i+1}/{len(chunks)}. Waiting 60 seconds to cool down... (Attempt {attempt+1}/{max_retries})")
-                    time.sleep(60) 
-                else:
-                    st.error(f"Error generating quiz from chunk {i+1}: {e}")
-                    break # Break on non-rate-limit errors so we don't infinitely retry a bad prompt
-
-    # Return exactly the number of questions the user asked for (trim excess if any)
-    return all_questions[:question_count]
+    return questions
 
 
-def evaluate_short_answer(question, correct_answer, user_answer):
-    """
-    Uses Groq to evaluate subjective short answers semantically.
-    """
-    prompt = f"""
-    You are an educator grading a short answer question.
-    Question: "{question}"
-    Correct Answer/Rubric: "{correct_answer}"
-    Student's Answer: "{user_answer}"
-    
-    Assess if the student's answer is correct based on the core meaning, even if phrased differently.
-    Return JSON only: {{"is_correct": true/false, "feedback": "Short explanation of why"}}
-    """
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant", # Smaller, faster model is fine for grading
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.1
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        return {"is_correct": False, "feedback": f"Evaluation error: {str(e)}"}
-
-
-def evaluate_answer(question_data, user_answer):
-    """
-    Evaluates a single user's answer against the question data.
-    Returns True if correct, False otherwise.
-    """
-    # Handle cases where the user left the answer blank
+def evaluate_answer(question, user_answer):
     if user_answer is None:
-        user_answer = ""
-        
-    user_ans = str(user_answer).strip()
-    correct_ans = str(question_data.get("answer", ""))
-    q_type = question_data.get("type", "")
+        return False
+    if question["type"] in {"MCQ", "True/False"}:
+        return str(user_answer).strip().lower() == str(question["answer"]).strip().lower()
 
-    # Exact match logic for Objective questions
-    if q_type in ["Multiple Choice Questions (MCQ)", "True/False", "MCQ"]:
-        return user_ans.lower() == correct_ans.lower()
-    
-    # LLM Evaluation logic for Subjective questions
-    elif q_type == "Short Answer":
-        if not user_ans: # If blank, it's automatically wrong
-            return False
-            
-        eval_result = evaluate_short_answer(
-            question=question_data["question"],
-            correct_answer=correct_ans,
-            user_answer=user_ans
-        )
-        return eval_result.get("is_correct", False)
-        
-    return False
+    expected = normalize_text(question["answer"]).lower()
+    response = normalize_text(str(user_answer)).lower()
+    expected_tokens = [w for w in expected.split() if w not in STOPWORDS]
+    if not expected_tokens:
+        return False
+    overlap = sum(1 for token in expected_tokens if token in response)
+    return overlap / max(1, len(expected_tokens)) >= 0.35
 
 
 def extract_input_text(input_mode, typed_text, uploaded_file):
@@ -441,177 +312,334 @@ if "current_q" not in st.session_state:
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
-if "splash_done" not in st.session_state:
-    st.session_state.splash_done = False
-
 st.markdown(
     """
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;800&display=swap');
-        
-        html, body, [class*="css"]  {
-            font-family: 'Poppins', sans-serif;
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap');
+
+        :root {
+            --bg-a: #f4f6f8;
+            --bg-b: #e8eef3;
+            --ink: #10202a;
+            --text: #1a2b35;
+            --muted: #4a5f6b;
+            --panel: #ffffff;
+            --panel-soft: #f9fbfc;
+            --line: #d7e0e6;
+            --brand: #006d77;
+            --brand-2: #0a9396;
+            --brand-soft: rgba(0, 109, 119, 0.14);
+            --success: #157347;
+            --warn: #9a6700;
+            --danger: #b42318;
+            --radius-xl: 20px;
+            --radius-lg: 14px;
+            --radius-md: 10px;
+            --shadow-sm: 0 8px 24px rgba(9, 30, 66, 0.08);
+            --shadow-lg: 0 20px 45px rgba(9, 30, 66, 0.14);
+        }
+
+        html, body, [class*="css"] {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            color: var(--text);
         }
 
         .stApp {
-            background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
-            background-size: 400% 400%;
-            animation: gradientBG 15s ease infinite;
-        }
-        
-        @keyframes gradientBG {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
+            background:
+                radial-gradient(1100px 340px at 5% -10%, rgba(10, 147, 150, 0.14), transparent 65%),
+                radial-gradient(900px 320px at 95% -5%, rgba(0, 109, 119, 0.12), transparent 65%),
+                linear-gradient(180deg, var(--bg-a), var(--bg-b));
+            min-height: 100vh;
         }
 
-        /* Glassmorphism Block Container */
-        .block-container {
-            background: rgba(255, 255, 255, 0.45);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            padding: 40px !important;
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
-            margin-top: 2rem;
-            margin-bottom: 2rem;
+        .main .block-container {
+            max-width: 1180px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-sm);
+            padding: clamp(1rem, 2vw, 2.2rem) clamp(1rem, 2.3vw, 2.4rem) clamp(1.2rem, 2.6vw, 2.6rem) !important;
+            margin-top: clamp(0.6rem, 1.1vw, 1rem);
+            margin-bottom: clamp(0.7rem, 1.1vw, 1rem);
+            animation: fadeSlide .42s ease;
         }
 
-        .hero {
-            background: linear-gradient(115deg, #ff0844 0%, #ffb199 100%);
-            color: white;
-            border-radius: 20px;
-            padding: 30px 40px;
-            margin-bottom: 24px;
-            box-shadow: 0 10px 40px rgba(255, 8, 68, 0.3);
-            text-align: center;
+        @keyframes fadeSlide {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-        
-        .hero h1 {
-            margin: 0;
-            font-size: 3rem;
-            font-weight: 800;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
+
+        h1, h2, h3, h4, h5, h6,
+        [data-testid="stHeading"] {
+            font-family: 'Fraunces', serif;
+            color: var(--ink) !important;
+            letter-spacing: 0.1px;
+            line-height: 1.2;
         }
-        .hero p {
-            margin: 10px 0 0;
-            opacity: 0.95;
-            font-size: 1.1rem;
-            font-weight: 300;
+
+        h1 { font-size: clamp(1.85rem, 3vw, 2.7rem); }
+        h2 { font-size: clamp(1.4rem, 2.25vw, 2.05rem); }
+        h3 { font-size: clamp(1.2rem, 1.75vw, 1.55rem); }
+
+        p, li, label, .stCaption, .stMarkdown, .stText {
+            color: var(--text) !important;
+            line-height: 1.55;
         }
-        
-        .card {
-            background: rgba(255, 255, 255, 0.65);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            padding: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.8);
-            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.05);
-            transition: transform 0.3s ease;
+
+        .stDivider {
+            border-top: 1px solid var(--line);
+            margin: 1rem 0 1.2rem;
         }
-        .card:hover {
-            transform: scale(1.02);
-            box-shadow: 0 15px 40px rgba(31, 38, 135, 0.15);
-        }
-        
-        /* Vibrant Buttons */
-        div.stButton > button {
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-            color: white !important;
-            border: none;
-            border-radius: 50px;
-            padding: 12px 28px;
-            font-weight: 600;
-            font-size: 1.1rem;
-            box-shadow: 0 4px 15px rgba(118, 75, 162, 0.4);
-            transition: all 0.3s ease;
+
+        div.stButton > button,
+        div.stDownloadButton > button,
+        div[data-testid="stFormSubmitButton"] > button {
             width: 100%;
-        }
-        div.stButton > button:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(118, 75, 162, 0.6);
-            color: white !important;
+            min-height: 46px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: linear-gradient(135deg, var(--brand), var(--brand-2));
+            color: #f5ffff !important;
+            font-size: 0.98rem;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            box-shadow: 0 10px 22px rgba(0, 109, 119, 0.22);
+            transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
         }
 
-        /* Input fields */
-        .stTextInput>div>div>input, .stTextArea textarea {
-            border-radius: 12px;
-            background: rgba(255,255,255,0.7) !important;
-            border: 2px solid rgba(255,255,255,0.9) !important;
-            transition: all 0.3s ease;
+        div.stButton > button:hover,
+        div.stDownloadButton > button:hover,
+        div[data-testid="stFormSubmitButton"] > button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 13px 24px rgba(0, 109, 119, 0.28);
+            filter: saturate(110%);
         }
-        .stTextInput>div>div>input:focus, .stTextArea textarea:focus {
-            box-shadow: 0 0 15px rgba(118, 75, 162, 0.3) !important;
-            border-color: #764ba2 !important;
+
+        div.stButton > button:focus-visible,
+        div.stDownloadButton > button:focus-visible,
+        div[data-testid="stFormSubmitButton"] > button:focus-visible,
+        .stTextInput > div > div > input:focus-visible,
+        .stTextArea textarea:focus-visible {
+            outline: 3px solid var(--brand-soft);
+            outline-offset: 2px;
         }
-        
-        /* Sidebar Styling */
+
+        .stTextInput > div > div > input,
+        .stTextArea textarea,
+        .stNumberInput input,
+        .stSelectbox > div > div,
+        .stMultiSelect > div > div,
+        [data-baseweb="select"] > div {
+            background: #ffffff !important;
+            border: 1px solid #c7d4dd !important;
+            border-radius: var(--radius-md) !important;
+            min-height: 44px;
+            color: var(--ink) !important;
+            -webkit-text-fill-color: var(--ink) !important;
+        }
+
+        .stTextArea textarea {
+            min-height: 130px;
+            background: #fcfeff !important;
+        }
+
+        .stTextInput input::placeholder,
+        .stTextArea textarea::placeholder {
+            color: #6f7f8a !important;
+            opacity: 1;
+        }
+
+        .stTextInput > div > div > input:focus,
+        .stTextArea textarea:focus,
+        .stNumberInput input:focus,
+        [data-baseweb="select"] > div:focus-within {
+            border-color: #14919b !important;
+            box-shadow: 0 0 0 4px var(--brand-soft) !important;
+        }
+
+        [data-testid="stWidgetLabel"],
+        [data-testid="stRadio"] p,
+        [role="radiogroup"] label,
+        .stSlider label,
+        .stFileUploader label,
+        .stSelectbox label,
+        .stTextInput label,
+        .stTextArea label {
+            color: var(--ink) !important;
+            font-weight: 650;
+        }
+
+        [data-baseweb="select"] *,
+        [data-baseweb="tag"] * {
+            color: var(--ink) !important;
+        }
+
+        [data-baseweb="select"] [data-baseweb="menu"] li {
+            color: var(--ink) !important;
+            background: #ffffff !important;
+        }
+
+        [data-baseweb="select"] [data-baseweb="menu"] li:hover {
+            background: #f0f4f7 !important;
+        }
+
+        [data-baseweb="select"] [data-baseweb="menu"] [data-baseweb="option"] {
+            color: var(--ink) !important;
+            background: #ffffff !important;
+        }
+
+        [data-baseweb="select"] [data-baseweb="menu"] [data-baseweb="option"]:hover {
+            background: #f0f4f7 !important;
+        }
+
+        [data-baseweb="select"] [data-baseweb="menu"] {
+            background: #ffffff !important;
+            border: 1px solid #c7d4dd !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+        }
+
         [data-testid="stSidebar"] {
-            background: rgba(255, 255, 255, 0.3);
-            backdrop-filter: blur(15px);
-            border-right: 1px solid rgba(255, 255, 255, 0.5);
+            background: linear-gradient(180deg, #ffffff, #f5f9fc);
+            border-right: 1px solid var(--line);
+        }
+
+        [data-testid="stSidebar"] .block-container {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            padding-top: 1rem !important;
+        }
+
+        [data-testid="stSidebar"] * {
+            color: var(--text) !important;
+        }
+
+        .user-pill {
+            display: inline-block;
+            padding: 0.14rem 0.5rem;
+            border-radius: 999px;
+            background: #dff3f4;
+            border: 1px solid #8ac8cc;
+            color: #005c64 !important;
+            font-weight: 700;
+            font-size: 0.82rem;
+            line-height: 1.2;
+        }
+
+        [data-testid="stMetric"] {
+            background: var(--panel-soft);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            padding: 0.65rem 0.8rem;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+        }
+
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricValue"] {
+            color: var(--ink) !important;
+        }
+
+        [data-testid="stExpander"] {
+            background: #ffffff;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .stProgress > div > div > div > div {
+            background: linear-gradient(90deg, #36b3a8, var(--brand));
+        }
+
+        .stAlert {
+            border-radius: var(--radius-md);
+            border: 1px solid var(--line);
+        }
+
+        .stSuccess { color: var(--success) !important; }
+        .stWarning { color: var(--warn) !important; }
+        .stError { color: var(--danger) !important; }
+
+        [data-testid="stHorizontalBlock"] {
+            gap: clamp(0.6rem, 1.4vw, 1rem);
+        }
+
+        [data-testid="stRadio"] [role="radiogroup"] {
+            display: flex;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+        }
+
+        [data-testid="stRadio"] [role="radiogroup"] > label {
+            background: #f6fafb;
+            border: 1px solid #d1dde4;
+            border-radius: 999px;
+            padding: 0.2rem 0.65rem;
+        }
+
+        .card {
+            background: #ffffff;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            margin-bottom: 1.5rem;
+            transition: transform .2s ease;
+        }
+
+        .card:hover {
+            box-shadow: var(--shadow-lg);
+            border-color: var(--brand-2);
+        }
+
+        @media (max-width: 1080px) {
+            .main .block-container {
+                border-radius: 14px;
+                padding: 1rem 1rem 1.25rem !important;
+            }
+        }
+
+        @media (max-width: 860px) {
+            .main .block-container {
+                max-width: 100%;
+                border-radius: 12px;
+            }
+
+            [data-testid="stHorizontalBlock"] {
+                display: flex;
+                flex-direction: column;
+                gap: 0.7rem;
+            }
+
+            [data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+            }
+
+            div.stButton > button,
+            div.stDownloadButton > button,
+            div[data-testid="stFormSubmitButton"] > button {
+                min-height: 44px;
+                font-size: 0.95rem;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .main .block-container {
+                padding: 0.85rem 0.7rem 1rem !important;
+                border-left: none;
+                border-right: none;
+                box-shadow: none;
+            }
+
+            h1 { font-size: 1.55rem; }
+            h2 { font-size: 1.25rem; }
+            h3 { font-size: 1.08rem; }
         }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-# --- Splash Screen ---
-if not st.session_state.splash_done:
-    splash_placeholder = st.empty()
-    with splash_placeholder.container():
-        st.markdown(
-            """
-            <div style="
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                height: 70vh;
-                text-align: center;
-            ">
-                <h1 style="
-                    font-size: 5rem;
-                    font-weight: 800;
-                    color: white;
-                    text-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                    margin-bottom: 20px;
-                    animation: fadeIn 2s ease-in-out;
-                ">SmartQuizzer</h1>
-                <p style="
-                    font-size: 1.5rem;
-                    color: rgba(255,255,255,0.9);
-                    font-weight: 300;
-                    animation: fadeIn 3s ease-in-out;
-                ">The Future of AI-Powered Learning</p>
-                <div style="
-                    margin-top: 40px;
-                    width: 50px;
-                    height: 50px;
-                    border: 5px solid rgba(255,255,255,0.3);
-                    border-radius: 50%;
-                    border-top-color: white;
-                    animation: spin 1s linear infinite;
-                "></div>
-            </div>
-            <style>
-                @keyframes fadeIn {
-                    0% { opacity: 0; transform: translateY(20px); }
-                    100% { opacity: 1; transform: translateY(0); }
-                }
-                @keyframes spin {
-                    to { transform: rotate(360deg); }
-                }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        time.sleep(2)
-    st.session_state.splash_done = True
-    st.rerun()
-
 
 
 
@@ -661,7 +689,7 @@ candidate = st.session_state.auth_user
 history = load_attempts(limit=200)
 
 with st.sidebar:
-    st.markdown(f"**Logged in as:** `{candidate}`")
+    st.markdown(f"**Logged in as:** <span class='user-pill'>{candidate}</span>", unsafe_allow_html=True)
     if st.button("Logout", use_container_width=True):
         st.session_state.auth_user = None
         st.session_state.answers = {}
@@ -770,8 +798,7 @@ if menu == "Generate Quiz":
                     st.success(f"Quiz generated successfully. Quiz ID: {quiz_id}")
                     with st.expander("Extracted Content Preview"):
                         st.write(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
-                    st.session_state.menu_selection = "Take Quiz"
-                    st.rerun()
+                    st.success("Quiz ready! Go to 'Take Quiz' from the sidebar.")
 
 elif menu == "Take Quiz":
     st.header("🧠 Take Your Quiz")
@@ -795,132 +822,155 @@ elif menu == "Take Quiz":
         if "answers" not in st.session_state:
             st.session_state.answers = {}
 
-        # Show only current question
-        current_idx = st.session_state.current_q
-        if current_idx < len(questions):
-            question = questions[current_idx]
-            st.divider()
-            st.markdown(f"### Question {current_idx + 1} of {len(questions)}")
-            
-            with st.container():
-                st.markdown('<div class="card">', unsafe_allow_html=True)
-                st.markdown(f"**{question['question']}**")
-                
-                # Question Input logic based on type
-                if question["type"] in ["Multiple Choice Questions (MCQ)", "MCQ"]:
-                    current_answer = st.session_state.answers.get(current_idx)
-                    try:
-                        index = question["options"].index(current_answer) if current_answer is not None else None
-                    except ValueError:
-                        index = None
-                    
-                    choice = st.radio(
-                        "Choose one:",
-                        question["options"],
-                        index=index,
-                        key=f"q_radio_{current_idx}"
-                    )
-                    st.session_state.answers[current_idx] = choice
-                
-                elif question["type"] == "True/False":
-                    current_answer = st.session_state.answers.get(current_idx)
-                    index = None
-                    if current_answer == "True":
-                        index = 0
-                    elif current_answer == "False":
-                        index = 1
-                    
-                    choice = st.radio(
-                        "True or False?",
-                        ["True", "False"],
-                        index=index,
-                        key=f"q_tf_{current_idx}"
-                    )
-                    st.session_state.answers[current_idx] = choice
-                
-                elif question["type"] == "Short Answer":
-                    ans = st.text_area(
-                        "Your Answer:",
-                        value=st.session_state.answers.get(current_idx, ""),
-                        key=f"q_sa_{current_idx}"
-                    )
-                    st.session_state.answers[current_idx] = ans
-                st.markdown('</div>', unsafe_allow_html=True)
+        idx = st.session_state.current_q
+        question = questions[idx]
 
-            # Navigation buttons
-            nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 1])
-            with nav_col1:
-                if st.button("⬅️ Previous", disabled=(current_idx == 0)):
+        # Progress
+        st.markdown(f"### 📝 Question {idx + 1} / {len(questions)}")
+        st.progress((idx + 1) / len(questions))
+
+        st.divider()
+        with st.container():
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown(f"**{question['question']}**")
+            
+            # Question Input logic based on type
+            q_type = question["type"]
+            if q_type in ["Multiple Choice Questions (MCQ)", "MCQ"]:
+                current_answer = st.session_state.answers.get(idx)
+                try:
+                    index = question["options"].index(current_answer) if current_answer is not None else None
+                except ValueError:
+                    index = None
+                
+                choice = st.radio(
+                    "Choose one:",
+                    question["options"],
+                    index=index,
+                    key=f"q_radio_{idx}"
+                )
+                st.session_state.answers[idx] = choice
+            
+            elif q_type == "True/False":
+                current_answer = st.session_state.answers.get(idx)
+                index = None
+                if current_answer == "True":
+                    index = 0
+                elif current_answer == "False":
+                    index = 1
+                
+                choice = st.radio(
+                    "True or False?",
+                    ["True", "False"],
+                    index=index,
+                    key=f"q_tf_{idx}"
+                )
+                st.session_state.answers[idx] = choice
+            
+            elif q_type == "Short Answer":
+                ans = st.text_area(
+                    "Your Answer:",
+                    value=st.session_state.answers.get(idx, ""),
+                    key=f"q_sa_{idx}"
+                )
+                st.session_state.answers[idx] = ans
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Navigation
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("⬅️ Previous"):
+                if idx > 0:
                     st.session_state.current_q -= 1
                     st.rerun()
-            
-            with nav_col3:
-                if current_idx < len(questions) - 1:
-                    if st.button("Next ➡️"):
-                        st.session_state.current_q += 1
-                        st.rerun()
-                else:
-                    if st.button("✅ Submit Quiz", type="primary"):
-                        # EVALUATION LOGIC
-                        with st.spinner("Grading your quiz..."):
-                            score = 0
-                            details = []
-                            diff_totals = defaultdict(lambda: {"correct": 0, "total": 0})
-                            
-                            for i, q in enumerate(questions):
-                                user_ans = st.session_state.answers.get(i, "")
-                                is_correct = evaluate_answer(q, user_ans)
-                                
-                                if is_correct:
-                                    score += 1
-                                    diff_totals[q["difficulty"]]["correct"] += 1
-                                
-                                diff_totals[q["difficulty"]]["total"] += 1
-                                details.append({
-                                    "question": q["question"],
-                                    "user_answer": user_ans,
-                                    "correct_answer": q["answer"],
-                                    "is_correct": is_correct,
-                                    "type": q["type"]
-                                })
-                            
-                            save_attempt(
-                                score=score,
-                                total=len(questions),
-                                user_name=st.session_state.auth_user,
-                                details=details,
-                                difficulty_breakdown=dict(diff_totals)
-                            )
-                            st.session_state.quiz_submitted = True
-                            st.session_state.results = {
-                                "score": score,
-                                "total": len(questions),
-                                "details": details
-                            }
-                            st.rerun()
 
-        # RESULTS PAGE
-        if st.session_state.get("quiz_submitted"):
-            res = st.session_state.results
-            st.balloons()
-            st.header("🎊 Quiz Results")
-            st.metric("Final Score", f"{res['score']} / {res['total']}", delta=f"{int(res['score']/res['total']*100)}%")
-            
-            with st.expander("Review Your Answers", expanded=True):
-                for i, d in enumerate(res['details']):
-                    color = "green" if d['is_correct'] else "red"
-                    st.markdown(f"**Q{i+1}: {d['question']}**")
-                    st.markdown(f"<span style='color:{color}'>Your Answer: {d['user_answer']}</span>", unsafe_allow_html=True)
-                    if not d['is_correct']:
-                        st.markdown(f"**Correct Answer:** {d['correct_answer']}")
-                    st.divider()
-            
-            if st.button("🔄 Try Another Quiz"):
+        with col2:
+            if st.button("Next ➡️"):
+                if idx < len(questions) - 1:
+                    st.session_state.current_q += 1
+                    st.rerun()
+
+        # Submit only on last question
+        if idx == len(questions) - 1:
+            if st.button("🚀 Submit Quiz", type="primary"):
+
+                score = 0
+                details = []
+                difficulty_totals = defaultdict(lambda: {"correct": 0, "total": 0})
+
+                for i, q in enumerate(questions):
+                    user_answer = st.session_state.answers.get(i)
+                    correct = evaluate_answer(q, user_answer)
+                    score += int(correct)
+
+                    diff = q.get("difficulty", "unknown")
+                    difficulty_totals[diff]["total"] += 1
+                    difficulty_totals[diff]["correct"] += int(correct)
+
+                    details.append({
+                        "index": i + 1,
+                        "question": q["question"],
+                        "user_answer": user_answer,
+                        "correct_answer": q["answer"],
+                        "is_correct": correct,
+                    })
+
+                percent = round((score / len(questions)) * 100, 2)
+
+                save_attempt(
+                    score=score,
+                    total=len(questions),
+                    user_name=candidate.strip() or "Guest",
+                    details=details,
+                    difficulty_breakdown=dict(difficulty_totals),
+                )
+
+                # Reset
                 st.session_state.current_q = 0
-                st.session_state.quiz_submitted = False
-                st.session_state.answers = {}
-                st.session_state.menu_selection = "Generate Quiz"
-                st.rerun()
+
+                st.success("Quiz Submitted!")
+
+                # Metrics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Score", f"{score}/{len(questions)}")
+                with col2:
+                    st.metric("Accuracy", f"{percent}%")
+                with col3:
+                    st.metric("Wrong", len(questions) - score)
+
+                # Feedback
+                if percent >= 80:
+                    st.balloons()
+                    st.success("🔥 Excellent performance!")
+                elif percent >= 50:
+                    st.info("👍 Good, but can improve.")
+                else:
+                    st.warning("⚠️ Needs improvement.")
+
+                # Weak Areas
+                weak_areas = []
+                for diff, stats in difficulty_totals.items():
+                    if stats["correct"] / stats["total"] < 0.5:
+                        weak_areas.append(diff)
+
+                if weak_areas:
+                    st.warning(f"⚠️ Weak in: {', '.join(weak_areas)}")
+
+                # Review Answers
+                with st.expander("📊 Review Answers", expanded=True):
+                    for item in details:
+                        if item["is_correct"]:
+                            st.success(f"Q{item['index']} - Correct ✅")
+                        else:
+                            st.error(f"Q{item['index']} - Incorrect ❌")
+
+                        st.write(f"Your answer: {item['user_answer']}")
+                        if not item["is_correct"]:
+                            st.write(f"Correct answer: {item['correct_answer']}")
+
+                        st.divider()
 
 elif menu == "Analytics Dashboard":
     st.subheader("Quiz Analytics Dashboard")
