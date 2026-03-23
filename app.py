@@ -808,19 +808,32 @@ elif menu == "Take Quiz":
                 
                 # Question Input logic based on type
                 if question["type"] in ["Multiple Choice Questions (MCQ)", "MCQ"]:
+                    current_answer = st.session_state.answers.get(current_idx)
+                    try:
+                        index = question["options"].index(current_answer) if current_answer is not None else None
+                    except ValueError:
+                        index = None
+                    
                     choice = st.radio(
                         "Choose one:",
                         question["options"],
-                        index=None if current_idx not in st.session_state.answers else question["options"].index(st.session_state.answers[current_idx]),
+                        index=index,
                         key=f"q_radio_{current_idx}"
                     )
                     st.session_state.answers[current_idx] = choice
                 
                 elif question["type"] == "True/False":
+                    current_answer = st.session_state.answers.get(current_idx)
+                    index = None
+                    if current_answer == "True":
+                        index = 0
+                    elif current_answer == "False":
+                        index = 1
+                    
                     choice = st.radio(
                         "True or False?",
                         ["True", "False"],
-                        index=None if current_idx not in st.session_state.answers else (0 if st.session_state.answers[current_idx] == "True" else 1),
+                        index=index,
                         key=f"q_tf_{current_idx}"
                     )
                     st.session_state.answers[current_idx] = choice

@@ -8,6 +8,5 @@ pydub
 moviepy
 mysql-connector-python
 groq
-json
 pdf2image
 pytesseract
