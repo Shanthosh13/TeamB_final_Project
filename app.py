@@ -375,6 +375,16 @@ st.markdown(
             to { opacity: 1; transform: scale(1) translateY(0); }
         }
 
+        .bounce-title {
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% {transform: translateY(0);}
+            40% {transform: translateY(-10px);}
+            60% {transform: translateY(-5px);}
+        }
+
         .card {
             background: rgba(255, 255, 255, 0.8);
             backdrop-filter: blur(10px);
@@ -653,7 +663,9 @@ st.markdown(
 
 
 if st.session_state.auth_user is None:
-    auth_mode = st.radio("SmartQuizzer", ["Login", "Register"], horizontal=True)
+    st.markdown("<h1 class='bounce-title' style='text-align: center; margin-bottom: 0.5rem;'>🧠 SmartQuizzer Pro</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #4a5f6b; margin-bottom: 2rem;'>The ultimate AI-powered study companion.</p>", unsafe_allow_html=True)
+    auth_mode = st.radio("Access Mode", ["Login", "Register"], horizontal=True, label_visibility="collapsed")
     if auth_mode == "Login":
         with st.form("login_form", clear_on_submit=False):
             login_username = st.text_input("Username", key="login_username")
@@ -762,13 +774,18 @@ if menu == "Generate Quiz":
         )
 
     if st.button("🚀 Generate Quiz", type="primary", use_container_width=True):
-        with st.spinner("Extracting and processing content..."):
+        with st.status("🛠️ Building your quiz...", expanded=True) as status_box:
+            status_box.write("📄 Reading content source...")
             processing_failed = False
             try:
                 extracted_text, source_name = extract_input_text(input_mode, typed_text, uploaded)
+                if extracted_text:
+                    status_box.write(f"✅ Extracted text from {source_name or 'input'}")
+                else:
+                    status_box.error("❌ Content extraction failed.")
             except Exception as exc:
                 detail = str(exc).strip() or f"{exc.__class__.__name__} occurred while processing the input."
-                st.error(f"Input processing failed: {detail}")
+                status_box.error(f"Input processing failed: {detail}")
                 extracted_text, source_name = "", ""
                 processing_failed = True
 
@@ -776,21 +793,24 @@ if menu == "Generate Quiz":
                 st.stop()
             if not extracted_text:
                 if input_mode == "Paste Text":
-                    st.warning("No text found. Paste some content and retry.")
+                    status_box.warning("No text found. Paste some content and retry.")
                 else:
                     file_name = uploaded.name if uploaded else "the selected file"
-                    st.warning(
+                    status_box.warning(
                         f"No valid text could be extracted from {file_name}. "
                         "For PDFs, ensure the file contains selectable text (not scanned images)."
                     )
             else:
                 progress = st.progress(0)
-                progress.progress(35)
+                status_box.write("🧠 AI is generating questions...")
+                progress.progress(45)
                 questions = generate_quiz(extracted_text, question_count, difficulty, question_type)
                 progress.progress(85)
+                
                 if not questions:
-                    st.warning("Not enough content to build a quiz. Provide richer material.")
+                    status_box.warning("Not enough content to build a quiz. Provide richer material.")
                 else:
+                    status_box.write("💾 Saving your interactive quiz...")
                     quiz_id = save_questions(
                         questions=questions,
                         source_name=source_name or "Typed Text",
@@ -804,10 +824,10 @@ if menu == "Generate Quiz":
                     st.session_state.answers = {}
                     st.session_state.quiz_submitted = False
                     progress.progress(100)
-                    st.success(f"Quiz generated successfully. Quiz ID: {quiz_id}")
-                    with st.expander("Extracted Content Preview"):
-                        st.write(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
-                    st.success("Quiz ready! Go to 'Take Quiz' from the sidebar.")
+                    status_box.update(label="🚀 Quiz Ready!", state="complete", expanded=False)
+                    st.success(f"Quiz generated successfully. Heading to 'Take Quiz'!")
+                    st.session_state.menu_selection = "Take Quiz"
+                    st.rerun()
 
 elif menu == "Take Quiz":
     st.header("🧠 Take Your Quiz")
