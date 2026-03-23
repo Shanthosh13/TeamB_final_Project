@@ -426,7 +426,7 @@ def extract_input_text(input_mode, typed_text, uploaded_file):
     return "", source_name
 
 
-st.set_page_config(page_title=APP_TITLE, page_icon="??", layout="wide")
+st.set_page_config(page_title=APP_TITLE, page_icon="🧠", layout="wide")
 init_db()
 
 if "quiz_submitted" not in st.session_state:
@@ -440,6 +440,9 @@ if "current_q" not in st.session_state:
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
+
+if "splash_done" not in st.session_state:
+    st.session_state.splash_done = False
 
 st.markdown(
     """
@@ -554,6 +557,61 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# --- Splash Screen ---
+if not st.session_state.splash_done:
+    splash_placeholder = st.empty()
+    with splash_placeholder.container():
+        st.markdown(
+            """
+            <div style="
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                height: 70vh;
+                text-align: center;
+            ">
+                <h1 style="
+                    font-size: 5rem;
+                    font-weight: 800;
+                    color: white;
+                    text-shadow: 0 10px 30px rgba(0,0,0,0.3);
+                    margin-bottom: 20px;
+                    animation: fadeIn 2s ease-in-out;
+                ">SmartQuizzer</h1>
+                <p style="
+                    font-size: 1.5rem;
+                    color: rgba(255,255,255,0.9);
+                    font-weight: 300;
+                    animation: fadeIn 3s ease-in-out;
+                ">The Future of AI-Powered Learning</p>
+                <div style="
+                    margin-top: 40px;
+                    width: 50px;
+                    height: 50px;
+                    border: 5px solid rgba(255,255,255,0.3);
+                    border-radius: 50%;
+                    border-top-color: white;
+                    animation: spin 1s linear infinite;
+                "></div>
+            </div>
+            <style>
+                @keyframes fadeIn {
+                    0% { opacity: 0; transform: translateY(20px); }
+                    100% { opacity: 1; transform: translateY(0); }
+                }
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        time.sleep(2)
+    st.session_state.splash_done = True
+    st.rerun()
+
 
 
 
@@ -712,7 +770,8 @@ if menu == "Generate Quiz":
                     st.success(f"Quiz generated successfully. Quiz ID: {quiz_id}")
                     with st.expander("Extracted Content Preview"):
                         st.write(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
-                    st.success("Quiz ready! Go to 'Take Quiz' from the sidebar.")
+                    st.session_state.menu_selection = "Take Quiz"
+                    st.rerun()
 
 elif menu == "Take Quiz":
     st.header("🧠 Take Your Quiz")
@@ -736,131 +795,119 @@ elif menu == "Take Quiz":
         if "answers" not in st.session_state:
             st.session_state.answers = {}
 
-        idx = st.session_state.current_q
-        question = questions[idx]
+        # Show only current question
+        current_idx = st.session_state.current_q
+        if current_idx < len(questions):
+            question = questions[current_idx]
+            st.divider()
+            st.markdown(f"### Question {current_idx + 1} of {len(questions)}")
+            
+            with st.container():
+                st.markdown('<div class="card">', unsafe_allow_html=True)
+                st.markdown(f"**{question['question']}**")
+                
+                # Question Input logic based on type
+                if question["type"] in ["Multiple Choice Questions (MCQ)", "MCQ"]:
+                    choice = st.radio(
+                        "Choose one:",
+                        question["options"],
+                        index=None if current_idx not in st.session_state.answers else question["options"].index(st.session_state.answers[current_idx]),
+                        key=f"q_radio_{current_idx}"
+                    )
+                    st.session_state.answers[current_idx] = choice
+                
+                elif question["type"] == "True/False":
+                    choice = st.radio(
+                        "True or False?",
+                        ["True", "False"],
+                        index=None if current_idx not in st.session_state.answers else (0 if st.session_state.answers[current_idx] == "True" else 1),
+                        key=f"q_tf_{current_idx}"
+                    )
+                    st.session_state.answers[current_idx] = choice
+                
+                elif question["type"] == "Short Answer":
+                    ans = st.text_area(
+                        "Your Answer:",
+                        value=st.session_state.answers.get(current_idx, ""),
+                        key=f"q_sa_{current_idx}"
+                    )
+                    st.session_state.answers[current_idx] = ans
+                st.markdown('</div>', unsafe_allow_html=True)
 
-        # Progress
-        st.markdown(f"### 📝 Question {idx + 1} / {len(questions)}")
-        st.progress((idx + 1) / len(questions))
-
-        # Question
-        st.write(question["question"])
-        st.caption(
-            f"Type: {question['type']} | Difficulty: {question.get('difficulty', 'unknown').title()}"
-        )
-
-        # Answer Input
-        if question["type"] in {"Multiple Choice Questions (MCQ)", "MCQ", "True/False"}:
-            answer = st.radio(
-                f"Answer {idx}",
-                question["options"],
-                index=None,
-                key=f"q_{idx}",
-                label_visibility="collapsed",
-            )
-        else:
-            answer = st.text_input(
-                "Your answer:",
-                key=f"q_{idx}"
-            )
-
-        st.session_state.answers[idx] = answer
-
-        # Navigation
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("⬅️ Previous"):
-                if idx > 0:
+            # Navigation buttons
+            nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 1])
+            with nav_col1:
+                if st.button("⬅️ Previous", disabled=(current_idx == 0)):
                     st.session_state.current_q -= 1
                     st.rerun()
-
-        with col2:
-            if st.button("Next ➡️"):
-                if idx < len(questions) - 1:
-                    st.session_state.current_q += 1
-                    st.rerun()
-
-        # Submit only on last question
-        if idx == len(questions) - 1:
-            if st.button("🚀 Submit Quiz", type="primary"):
-
-                score = 0
-                details = []
-                difficulty_totals = defaultdict(lambda: {"correct": 0, "total": 0})
-
-                for i, q in enumerate(questions):
-                    user_answer = st.session_state.answers.get(i)
-                    correct = evaluate_answer(q, user_answer)
-                    score += int(correct)
-
-                    diff = q.get("difficulty", "unknown")
-                    difficulty_totals[diff]["total"] += 1
-                    difficulty_totals[diff]["correct"] += int(correct)
-
-                    details.append({
-                        "index": i + 1,
-                        "question": q["question"],
-                        "user_answer": user_answer,
-                        "correct_answer": q["answer"],
-                        "is_correct": correct,
-                    })
-
-                percent = round((score / len(questions)) * 100, 2)
-
-                save_attempt(
-                    score=score,
-                    total=len(questions),
-                    user_name=candidate.strip() or "Guest",
-                    details=details,
-                    difficulty_breakdown=dict(difficulty_totals),
-                )
-
-                # Reset
-                st.session_state.current_q = 0
-
-                st.success("Quiz Submitted!")
-
-                # Metrics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Score", f"{score}/{len(questions)}")
-                with col2:
-                    st.metric("Accuracy", f"{percent}%")
-                with col3:
-                    st.metric("Wrong", len(questions) - score)
-
-                # Feedback
-                if percent >= 80:
-                    st.balloons()
-                    st.success("🔥 Excellent performance!")
-                elif percent >= 50:
-                    st.info("👍 Good, but can improve.")
+            
+            with nav_col3:
+                if current_idx < len(questions) - 1:
+                    if st.button("Next ➡️"):
+                        st.session_state.current_q += 1
+                        st.rerun()
                 else:
-                    st.warning("⚠️ Needs improvement.")
+                    if st.button("✅ Submit Quiz", type="primary"):
+                        # EVALUATION LOGIC
+                        with st.spinner("Grading your quiz..."):
+                            score = 0
+                            details = []
+                            diff_totals = defaultdict(lambda: {"correct": 0, "total": 0})
+                            
+                            for i, q in enumerate(questions):
+                                user_ans = st.session_state.answers.get(i, "")
+                                is_correct = evaluate_answer(q, user_ans)
+                                
+                                if is_correct:
+                                    score += 1
+                                    diff_totals[q["difficulty"]]["correct"] += 1
+                                
+                                diff_totals[q["difficulty"]]["total"] += 1
+                                details.append({
+                                    "question": q["question"],
+                                    "user_answer": user_ans,
+                                    "correct_answer": q["answer"],
+                                    "is_correct": is_correct,
+                                    "type": q["type"]
+                                })
+                            
+                            save_attempt(
+                                score=score,
+                                total=len(questions),
+                                user_name=st.session_state.auth_user,
+                                details=details,
+                                difficulty_breakdown=dict(diff_totals)
+                            )
+                            st.session_state.quiz_submitted = True
+                            st.session_state.results = {
+                                "score": score,
+                                "total": len(questions),
+                                "details": details
+                            }
+                            st.rerun()
 
-                # Weak Areas
-                weak_areas = []
-                for diff, stats in difficulty_totals.items():
-                    if stats["correct"] / stats["total"] < 0.5:
-                        weak_areas.append(diff)
-
-                if weak_areas:
-                    st.warning(f"⚠️ Weak in: {', '.join(weak_areas)}")
-
-                # Review Answers
-                with st.expander("📊 Review Answers", expanded=True):
-                    for item in details:
-                        if item["is_correct"]:
-                            st.success(f"Q{item['index']} - Correct ✅")
-                        else:
-                            st.error(f"Q{item['index']} - Incorrect ❌")
-
-                        st.write(f"Your answer: {item['user_answer']}")
-                        if not item["is_correct"]:
-                            st.write(f"Correct answer: {item['correct_answer']}")
-
-                        st.divider()
+        # RESULTS PAGE
+        if st.session_state.get("quiz_submitted"):
+            res = st.session_state.results
+            st.balloons()
+            st.header("🎊 Quiz Results")
+            st.metric("Final Score", f"{res['score']} / {res['total']}", delta=f"{int(res['score']/res['total']*100)}%")
+            
+            with st.expander("Review Your Answers", expanded=True):
+                for i, d in enumerate(res['details']):
+                    color = "green" if d['is_correct'] else "red"
+                    st.markdown(f"**Q{i+1}: {d['question']}**")
+                    st.markdown(f"<span style='color:{color}'>Your Answer: {d['user_answer']}</span>", unsafe_allow_html=True)
+                    if not d['is_correct']:
+                        st.markdown(f"**Correct Answer:** {d['correct_answer']}")
+                    st.divider()
+            
+            if st.button("🔄 Try Another Quiz"):
+                st.session_state.current_q = 0
+                st.session_state.quiz_submitted = False
+                st.session_state.answers = {}
+                st.session_state.menu_selection = "Generate Quiz"
+                st.rerun()
 
 elif menu == "Analytics Dashboard":
     st.subheader("Quiz Analytics Dashboard")
