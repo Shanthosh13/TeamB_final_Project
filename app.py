@@ -403,6 +403,24 @@ st.markdown(
             background: rgba(255, 255, 255, 0.95);
         }
 
+        .feature-card {
+            border-left: 5px solid var(--brand);
+            padding: 1.25rem !important;
+            margin-bottom: 20px;
+        }
+
+        .feature-card h4 {
+            margin: 0 0 8px 0 !important;
+            color: var(--brand) !important;
+            font-size: 1.15rem;
+        }
+
+        .feature-card p {
+            margin: 0 !important;
+            font-size: 0.92rem;
+            color: var(--muted) !important;
+        }
+
         h1, h2, h3, h4, h5, h6,
         [data-testid="stHeading"] {
             font-family: 'Fraunces', serif;
@@ -694,6 +712,36 @@ if st.session_state.auth_user is None:
                         st.success("Registration successful. Please login.")
                     else:
                         st.error(message)
+
+    # 🚀 Interactive Feature Showcase
+    st.divider()
+    st.markdown("<h3 style='text-align: center; margin-bottom: 2rem;'>🚀 Core Platform Features</h3>", unsafe_allow_html=True)
+    
+    feat_col1, feat_col2 = st.columns(2)
+    with feat_col1:
+        st.markdown("""
+            <div class='card feature-card'>
+                <h4>🧠 Smart Extraction</h4>
+                <p>Upload PDF, DOCX, or even Scanned Images. Our AI handles the heavy lifting of reading and understanding your material.</p>
+            </div>
+            <div class='card feature-card'>
+                <h4>📊 Interactive Analytics</h4>
+                <p>Track your accuracy, speed, and topic-wise strengths with our pro-level dashboard visualizing every attempt.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with feat_col2:
+        st.markdown("""
+            <div class='card feature-card'>
+                <h4>🎙️ Media-to-Quiz</h4>
+                <p>Turn MP3 audio recordings or MP4 lectures directly into interactive quizzes. Perfect for studying on the go!</p>
+            </div>
+            <div class='card feature-card'>
+                <h4>⚡ Instant Feedback</h4>
+                <p>Receive immediate scoring and explanations. Identify your weak points instantly and refine your knowledge.</p>
+            </div>
+        """, unsafe_allow_html=True)
+
     st.stop()
 
 if "menu_selection" not in st.session_state:
