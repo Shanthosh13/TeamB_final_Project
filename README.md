@@ -30,6 +30,9 @@ SmartQuizzer Live is an AI-powered quiz generator built using **Python and Strea
 * 🗂 **Automated Storage**: Backend SQLite database to manage history without manual setup.
 * 📈 **Live Performance Tracking**: View dynamic, live updates on your quiz attempts.
 * 🧪 **Attempt History**: Stores past quiz attempts, scores, and metadata for review.
+* ✨ **Interactive Splash Screen**: Beautiful 2-second animated entrance for the application.
+* ⚡ **Instant Quiz Viewing**: Automatically redirects to the quiz immediately after generation.
+* 📑 **Single Question View**: Enhanced user experience by showing one question at a time.
 
 ---
 
