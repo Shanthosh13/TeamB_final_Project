@@ -345,28 +345,52 @@ st.markdown(
         }
 
         .stApp {
-            background:
-                radial-gradient(1100px 340px at 5% -10%, rgba(10, 147, 150, 0.14), transparent 65%),
-                radial-gradient(900px 320px at 95% -5%, rgba(0, 109, 119, 0.12), transparent 65%),
-                linear-gradient(180deg, var(--bg-a), var(--bg-b));
+            background: 
+                linear-gradient(120deg, rgba(0, 109, 119, 0.05) 0%, rgba(10, 147, 150, 0.05) 100%),
+                radial-gradient(at 0% 0%, rgba(0, 109, 119, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(10, 147, 150, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(0, 109, 119, 0.1) 0px, transparent 50%),
+                radial-gradient(at 0% 100%, rgba(10, 147, 150, 0.1) 0px, transparent 50%),
+                var(--bg-a);
+            background-attachment: fixed;
             min-height: 100vh;
         }
 
         .main .block-container {
             max-width: 1180px;
-            background: var(--panel);
-            border: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.7);
             border-radius: var(--radius-xl);
             box-shadow: var(--shadow-sm);
             padding: clamp(1rem, 2vw, 2.2rem) clamp(1rem, 2.3vw, 2.4rem) clamp(1.2rem, 2.6vw, 2.6rem) !important;
             margin-top: clamp(0.6rem, 1.1vw, 1rem);
             margin-bottom: clamp(0.7rem, 1.1vw, 1rem);
-            animation: fadeSlide .42s ease;
+            animation: fadeInScale 0.6s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
-        @keyframes fadeSlide {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.98) translateY(10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            margin-bottom: 1.5rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-lg);
+            border-color: var(--brand-2);
+            background: rgba(255, 255, 255, 0.95);
         }
 
         h1, h2, h3, h4, h5, h6,
@@ -574,21 +598,6 @@ st.markdown(
             border: 1px solid #d1dde4;
             border-radius: 999px;
             padding: 0.2rem 0.65rem;
-        }
-
-        .card {
-            background: #ffffff;
-            border: 1px solid var(--line);
-            border-radius: var(--radius-lg);
-            padding: 1.5rem;
-            box-shadow: var(--shadow-sm);
-            margin-bottom: 1.5rem;
-            transition: transform .2s ease;
-        }
-
-        .card:hover {
-            box-shadow: var(--shadow-lg);
-            border-color: var(--brand-2);
         }
 
         @media (max-width: 1080px) {
@@ -930,6 +939,7 @@ elif menu == "Take Quiz":
                 st.session_state.current_q = 0
 
                 st.success("Quiz Submitted!")
+                st.balloons()
 
                 # Metrics
                 col1, col2, col3 = st.columns(3)

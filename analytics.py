@@ -44,6 +44,23 @@ def render_dashboard(dataset):
         st.info("No attempts yet. Submit a quiz to populate analytics.")
         return
 
+    # User Interactivity: Date Filter
+    st.sidebar.markdown("### 🔍 Filter Analytics")
+    df_temp = pd.DataFrame(rows)
+    if not df_temp.empty and "submitted_at" in df_temp.columns:
+        df_temp["submitted_at"] = pd.to_datetime(df_temp["submitted_at"])
+        min_date = df_temp["submitted_at"].min().date()
+        max_date = df_temp["submitted_at"].max().date()
+        date_range = st.sidebar.date_input("Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
+        
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            mask = (df_temp["submitted_at"].dt.date >= start_date) & (df_temp["submitted_at"].dt.date <= end_date)
+            rows = df_temp.loc[mask].to_dict('records')
+            if not rows:
+                st.warning("No data for the selected period.")
+                return
+
     # Dashboard-scoped CSS for cards, tables, and chart wrappers.
     st.markdown("""
         <style>
