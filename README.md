@@ -19,6 +19,7 @@ SmartQuizzer Live is an AI-powered quiz generator built using **Python and Strea
 - [Backend Database](#🗄-backend-database)
 - [GitHub Setup](#📦-github-setup)
 - [Future Improvements](#📊-future-improvements)
+- [Team Members & Contributions](#👥-team-members--contributions)
 
 ---
 
@@ -152,13 +153,31 @@ git push
 ## 📊 Future Improvements
 
 * 🤖 Integration with advanced LLMs (like OpenAI/Claude) for more nuanced question generation.
-* 🎚️ Adaptive difficulty engine that adjusts questions based on user skill level.
-* 🏆 Global leaderboard system.
 * ☁️ Online deployment with Streamlit Cloud or Heroku.
-* 🔐 User authentication and multi-user support.
 
 ---
 
-## 👨‍💻 Author
+## 👥 Team Members & Contributions
 
-**Shiva Kashboina**
+This project was developed by a team of four members:
+
+- **Sujal Gupta (Team Leader)** – Lead System Architect, Data Analytics
+  - Led the project planning, task distribution, and overall execution
+  - Designed system architecture and workflow
+  - Worked on data processing, analytics, and module integration
+  - Ensured smooth collaboration between AI, backend, and frontend teams
+
+- **Shuchi Makhija** – AI Engineer
+  - Developed AI/ML models for quiz generation
+  - Implemented adaptive difficulty logic
+  - Integrated NLP and LLM APIs
+
+- **Shiva** – Backend Developer
+  - Built APIs and backend services
+  - Managed server-side logic and database communication
+  - Handled system integration
+
+- **Lithika D** – UI Developer
+  - Designed and developed user interface
+  - Improved user experience (UX)
+  - Integrated frontend with backend
