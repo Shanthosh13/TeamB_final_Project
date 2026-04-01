@@ -6,13 +6,8 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-
-import pandas as pd
 import pdfplumber
 import plotly.express as px
-import os
-import requests
-from dotenv import load_dotenv
 import streamlit as st
 load_dotenv()
 from docx import Document
@@ -104,28 +99,45 @@ def extract_keywords(text, top_k=80):
 
 def text_from_pdf(file_bytes):
     result = []
+    
     with pdfplumber.open(BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
+            # 1. Extract standard selectable text
             page_text = page.extract_text() or ""
+            
+            # 2. If OCR is available, hunt for images embedded on this specific page
+            if HAS_OCR:
+                for img in page.images:
+                    try:
+                        # Get the bounding box coordinates of the embedded image
+                        bbox = (img["x0"], img["top"], img["x1"], img["bottom"])
+                        
+                        # Crop the page to just that image and convert it to a PIL image
+                        image_crop = page.crop(bbox).to_image(resolution=200).original
+                        
+                        # Run OCR specifically on that cropped image
+                        ocr_text = pytesseract.image_to_string(image_crop)
+                        
+                        if ocr_text.strip():
+                            # Append it cleanly so the AI knows it came from a graphic
+                            page_text += f"\n[Text from Graphic/Image]: {ocr_text.strip()}\n"
+                    except Exception as e:
+                        # Silently skip if the image is corrupted or coordinates are off-page
+                        continue
+
+            # 3. Handle the edge case where the WHOLE page is a single scanned image
+            # (If standard text extraction found nothing, OCR the full page)
+            if not page_text.strip() and HAS_OCR:
+                try:
+                    full_page_img = page.to_image(resolution=200).original
+                    page_text = pytesseract.image_to_string(full_page_img)
+                except Exception:
+                    pass
+
             if page_text.strip():
                 result.append(page_text)
-    extracted = "\n".join(result).strip()
-    if extracted:
-        return extracted
-
-    # Fallback for scanned/image-only PDFs when OCR dependencies are present.
-    if not HAS_OCR:
-        return ""
-    try:
-        images = convert_from_bytes(file_bytes)
-        ocr_pages = []
-        for image in images:
-            page_text = pytesseract.image_to_string(image) or ""
-            if page_text.strip():
-                ocr_pages.append(page_text)
-        return "\n".join(ocr_pages).strip()
-    except Exception:
-        return ""
+                
+    return "\n".join(result).strip()
 
 
 def text_from_docx(file_bytes):
@@ -212,45 +224,165 @@ def build_true_false(sentence, keyword_bank, difficulty):
         "difficulty": difficulty.lower(),
     }
 
+def chunk_text(text, max_chars=12000):
+    """
+    Splits text into chunks, respecting paragraph breaks where possible,
+    to ensure we don't exceed API token limits.
+    """
+    paragraphs = text.split('\n')
+    chunks = []
+    current_chunk = ""
+    
+    for p in paragraphs:
+        # If adding the next paragraph keeps us under the limit, add it
+        if len(current_chunk) + len(p) < max_chars:
+            current_chunk += p + "\n"
+        else:
+            # Otherwise, save the current chunk and start a new one
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            
+            # Edge case: What if a single paragraph is massive? Force split it.
+            if len(p) > max_chars:
+                for i in range(0, len(p), max_chars):
+                    chunks.append(p[i:i+max_chars])
+                current_chunk = ""
+            else:
+                current_chunk = p + "\n"
+                
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+        
+    return chunks
+
 
 def generate_quiz(text, question_count, difficulty, question_type):
-    sentences = split_sentences(text)
-    if not sentences:
-        return []
-    pool = sentence_pool(sentences, difficulty)
-    random.shuffle(pool)
-    keyword_bank = extract_keywords(text)
-
-    builders = {
-        "Multiple Choice Questions (MCQ)": build_mcq,
-        "True/False": build_true_false,
-        "Short Answer": build_short_answer,
-    }
-
-    questions = []
-    builder = builders[question_type]
-    for sentence in pool:
-        question = builder(sentence, keyword_bank, difficulty) if question_type != "Short Answer" else builder(sentence, difficulty)
-        if question:
-            questions.append(question)
-        if len(questions) >= question_count:
+    """
+    Generates quiz questions using the Groq API with chunking and rate-limit handling.
+    """
+    chunks = chunk_text(text, max_chars=12000) # Safe limit for ~6000 TPM
+    all_questions = []
+    
+    # Figure out roughly how many questions we need per chunk to hit the user's total
+    questions_per_chunk = math.ceil(question_count / len(chunks))
+    
+    for i, chunk in enumerate(chunks):
+        # Stop if we already have enough questions
+        if len(all_questions) >= question_count:
             break
-    return questions
+            
+        # Determine how many questions to ask for in this specific request
+        requested_count = min(questions_per_chunk, question_count - len(all_questions))
+        
+        prompt = f"""
+        You are an expert educator. Create a {requested_count}-question {question_type} quiz based on the text below.
+        The difficulty level should be {difficulty}.
+
+        Text:
+        \"\"\"{chunk}\"\"\"
+
+        Output the result strictly in the following JSON format. Ensure the key is "questions" and the value is a list of objects.
+        {{
+            "questions": [
+                {{
+                    "question": "The question text",
+                    "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+                    "answer": "The correct answer",
+                    "type": "{question_type}",
+                    "difficulty": "{difficulty.lower()}"
+                }}
+            ]
+        }}
+        """
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant designed to output strict JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3 
+                )
+                
+                result_json = json.loads(response.choices[0].message.content)
+                chunk_questions = result_json.get("questions", [])
+                all_questions.extend(chunk_questions)
+                
+                # Success! Break out of the retry loop and move to the next chunk
+                break 
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                # If we hit a rate limit (413 or 429), pause for 60 seconds
+                if "rate_limit" in error_msg or "429" in error_msg or "413" in error_msg or "too large" in error_msg:
+                    st.warning(f"⏳ API rate limit reached on chunk {i+1}/{len(chunks)}. Waiting 60 seconds to cool down... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(60) 
+                else:
+                    st.error(f"Error generating quiz from chunk {i+1}: {e}")
+                    break
+
+    return all_questions[:question_count]
 
 
-def evaluate_answer(question, user_answer):
+def evaluate_short_answer(question, correct_answer, user_answer):
+    """
+    Uses Groq to evaluate subjective short answers semantically.
+    """
+    prompt = f"""
+    You are an educator grading a short answer question.
+    Question: "{question}"
+    Correct Answer/Rubric: "{correct_answer}"
+    Student's Answer: "{user_answer}"
+    
+    Assess if the student's answer is correct based on the core meaning, even if phrased differently.
+    Return JSON only: {{"is_correct": true/false, "feedback": "Short explanation of why"}}
+    """
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant", # Smaller, faster model is fine for grading
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {"is_correct": False, "feedback": f"Evaluation error: {str(e)}"}
+    
+
+def evaluate_answer(question_data, user_answer):
+    """
+    Evaluates a single user's answer against the question data.
+    Returns True if correct, False otherwise.
+    """
+    # Handle cases where the user left the answer blank
     if user_answer is None:
-        return False
-    if question["type"] in {"MCQ", "True/False"}:
-        return str(user_answer).strip().lower() == str(question["answer"]).strip().lower()
+        user_answer = ""
+        
+    user_ans = str(user_answer).strip()
+    correct_ans = str(question_data.get("answer", ""))
+    q_type = question_data.get("type", "")
 
-    expected = normalize_text(question["answer"]).lower()
-    response = normalize_text(str(user_answer)).lower()
-    expected_tokens = [w for w in expected.split() if w not in STOPWORDS]
-    if not expected_tokens:
-        return False
-    overlap = sum(1 for token in expected_tokens if token in response)
-    return overlap / max(1, len(expected_tokens)) >= 0.35
+    # Exact match logic for Objective questions
+    if q_type in ["Multiple Choice Questions (MCQ)", "True/False", "MCQ"]:
+        return user_ans.lower() == correct_ans.lower()
+    
+    # LLM Evaluation logic for Subjective questions
+    elif q_type == "Short Answer":
+        if not user_ans: # If blank, it's automatically wrong
+            return False
+            
+        eval_result = evaluate_short_answer(
+            question=question_data["question"],
+            correct_answer=correct_ans,
+            user_answer=user_ans
+        )
+        return eval_result.get("is_correct", False)
+        
+    return False
 
 
 def extract_input_text(input_mode, typed_text, uploaded_file):
@@ -1116,8 +1248,6 @@ with st.sidebar:
     st.metric("Attempts", tests_taken)
     st.metric("Average Accuracy", f"{avg_accuracy}%")
 
-    # Top Performers section removed as per privacy request
-
 if menu == "Home":
     st.markdown(f"""
         <div style='display: flex; align-items: center; gap: 20px; margin-bottom: 2rem;'>
@@ -1185,8 +1315,6 @@ if menu == "Home":
             st.rerun()
 
     st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
-    # Global leaderboard removed as per request for private-only performance
-
 
 elif menu == "Generate Quiz":
     st.markdown(f"""
@@ -1227,7 +1355,7 @@ elif menu == "Generate Quiz":
             <div class='card' style='padding: 1.5rem; text-align: center; {active_style}'>
                 <div style='font-size: 2.5rem; margin-bottom: 0.8rem;'>📎</div>
                 <h4 style='margin:0;'>Upload File</h4>
-                <p style='font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem;'>PDF, DOCX, Audio, or Video</p>
+                <p style='font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem;'>PDF or DOCX documents</p>
             </div>
         """, unsafe_allow_html=True)
         if st.button("Use File Uploader", key="mode_uploaded", use_container_width=True):
@@ -1235,7 +1363,6 @@ elif menu == "Generate Quiz":
             st.rerun()
 
     st.divider()
-    
     typed_text = ""
     uploaded = None
 
@@ -1266,7 +1393,6 @@ elif menu == "Generate Quiz":
                     {" ".join([f"<span style='background: #eef2f5; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; color: #4a5f6b; font-weight: 700;'>{ext.upper()}</span>" for ext in upload_types])}
                 </div>
             """, unsafe_allow_html=True)
-
             if not HAS_OCR:
                 st.caption("ℹ️ Scanned PDF OCR is disabled. Install `pytesseract` and `pdf2image` to enable it.")
 
@@ -1294,16 +1420,16 @@ elif menu == "Generate Quiz":
     
     input_mode = st.session_state.input_mode_choice
 
-    if st.button("🚀 Generate Quiz", type="primary", use_container_width=True):
-        with st.status("🛠️ Building your quiz...", expanded=True) as status_box:
-            status_box.write("📄 Reading content source...")
+    if st.button("Generate Quiz", type="primary", use_container_width=True):
+        with st.status("Building your quiz...", expanded=True) as status_box:
+            status_box.write("Reading content source...")
             processing_failed = False
             try:
                 extracted_text, source_name = extract_input_text(input_mode, typed_text, uploaded)
                 if extracted_text:
-                    status_box.write(f"✅ Extracted text from {source_name or 'input'}")
+                    status_box.write(f"Extracted text from {source_name or 'input'}")
                 else:
-                    status_box.error("❌ Content extraction failed.")
+                    status_box.error("Content extraction failed.")
             except Exception as exc:
                 detail = str(exc).strip() or f"{exc.__class__.__name__} occurred while processing the input."
                 status_box.error(f"Input processing failed: {detail}")
@@ -1323,7 +1449,7 @@ elif menu == "Generate Quiz":
                     )
             else:
                 progress = st.progress(0)
-                status_box.write("🧠 AI is generating questions...")
+                status_box.write("AI is generating questions...")
                 progress.progress(45)
                 questions = generate_quiz(extracted_text, question_count, difficulty, question_type)
                 progress.progress(85)
@@ -1331,7 +1457,7 @@ elif menu == "Generate Quiz":
                 if not questions:
                     status_box.warning("Not enough content to build a quiz. Provide richer material.")
                 else:
-                    status_box.write("💾 Saving your interactive quiz...")
+                    status_box.write("Saving your interactive quiz...")
                     quiz_id = save_questions(
                         questions=questions,
                         source_name=source_name or "Typed Text",
@@ -1346,13 +1472,13 @@ elif menu == "Generate Quiz":
                     st.session_state.quiz_submitted = False
                     st.session_state.current_q = 0
                     progress.progress(100)
-                    status_box.update(label="🚀 Quiz Ready!", state="complete", expanded=False)
+                    status_box.update(label="Quiz Ready!", state="complete", expanded=False)
                     st.success(f"Quiz generated successfully. Heading to 'Take Quiz'!")
                     st.session_state.menu_selection = "Take Quiz"
                     st.rerun()
 
 elif menu == "Take Quiz":
-    st.header("🧠 Take Your Quiz")
+    st.header("Take Your Quiz")
     st.write("Answer step-by-step and submit at the end.")
 
     quiz = load_questions()
