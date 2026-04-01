@@ -54,9 +54,14 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
+            mobile TEXT,
             created_at TEXT NOT NULL
         )
         """)
+
+        # Add mobile column if it doesn't exist (for existing databases)
+        if not _column_exists(connection, "users", "mobile"):
+            cursor.execute("ALTER TABLE users ADD COLUMN mobile TEXT")
 
         connection.commit()
 
@@ -65,7 +70,7 @@ def _hash_password(password):
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def register_user(username, password):
+def register_user(username, password, mobile):
     cleaned = (username or "").strip()
 
     with _connect() as connection:
@@ -76,8 +81,8 @@ def register_user(username, password):
             return False, "Username already exists."
 
         cursor.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-            (cleaned, _hash_password(password), datetime.utcnow().isoformat()),
+            "INSERT INTO users (username, password_hash, mobile, created_at) VALUES (?, ?, ?, ?)",
+            (cleaned, _hash_password(password), mobile, datetime.utcnow().isoformat()),
         )
 
         connection.commit()
@@ -172,19 +177,20 @@ def save_attempt(score, total, user_name="Guest", details=None, difficulty_break
         return cursor.lastrowid
 
 
-def load_attempts(limit=20):
+def load_attempts(limit=20, user_name=None):
     with _connect() as connection:
         cursor = connection.cursor()
 
-        cursor.execute(
-            """
-            SELECT user_name, score, total, percentage, details_json, difficulty_breakdown_json, submitted_at
-            FROM attempts
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        query = "SELECT user_name, score, total, percentage, details_json, difficulty_breakdown_json, submitted_at FROM attempts"
+        params = []
+        if user_name:
+            query += " WHERE user_name = ?"
+            params.append(user_name)
+        
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(query, tuple(params))
 
         rows = cursor.fetchall()
 

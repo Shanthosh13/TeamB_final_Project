@@ -65,46 +65,63 @@ def render_dashboard(dataset):
     st.markdown("""
         <style>
         .analytics-title {
-            font-size: 1.2rem;
-            font-weight: 800;
-            color: #13242f;
-            margin: 0.3rem 0 0.9rem;
-            letter-spacing: 0.2px;
+            font-size: 1.4rem;
+            font-family: 'Fraunces', serif;
+            font-weight: 700;
+            color: #10202a;
+            margin: 1.5rem 0 1rem;
+            letter-spacing: -0.2px;
         }
         .metric-card {
-            background: linear-gradient(160deg, #ffffff, #f7fbfd);
-            border-radius: 16px;
-            padding: 18px 16px;
-            box-shadow: 0 10px 24px rgba(16, 34, 45, 0.08);
-            border: 1px solid #d8e3ea;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 22px 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.8);
             text-align: left;
-            transition: transform 0.18s ease, box-shadow 0.18s ease;
-            margin-bottom: 12px;
+            transition: all 0.3s ease;
+            margin-bottom: 15px;
+            position: relative;
+            overflow: hidden;
+        }
+        .metric-card::after {
+            content: '';
+            position: absolute;
+            right: -10px; bottom: -10px;
+            width: 80px; height: 80px;
+            background: radial-gradient(circle, rgba(0, 109, 119, 0.05) 0%, transparent 70%);
+            border-radius: 50%;
         }
         .metric-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 14px 28px rgba(16, 34, 45, 0.12);
+            transform: translateY(-5px);
+            box-shadow: 0 15px 35px rgba(0, 109, 119, 0.1);
+            background: rgba(255, 255, 255, 0.9);
         }
         .metric-card h3 {
             margin: 0;
-            color: #3f5563 !important;
-            font-size: 0.9rem;
-            font-weight: 700 !important;
-            letter-spacing: 0.3px;
+            color: #4a5f6b !important;
+            font-size: 0.85rem;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 600 !important;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
         .metric-card h2 {
-            margin: 8px 0 0 0;
-            color: #10222d;
-            font-size: 2.05rem;
-            font-weight: 800;
+            margin: 10px 0 0 0;
+            color: #006d77;
+            font-size: 2.3rem;
+            font-family: 'Fraunces', serif;
+            font-weight: 700;
         }
         .chart-container {
-            background: #ffffff;
-            border-radius: 16px;
-            padding: 10px 10px 0;
-            box-shadow: 0 10px 26px rgba(16, 34, 45, 0.07);
-            border: 1px solid #dbe6ee;
-            margin-bottom: 18px;
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(8px);
+            border-radius: 24px;
+            padding: 20px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            margin-bottom: 25px;
         }
 
         [data-testid="stDataFrame"] {
@@ -130,6 +147,19 @@ def render_dashboard(dataset):
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="analytics-title">🏆 High-Level Overview</div>', unsafe_allow_html=True)
+    
+    # Download Button for the whole dataset
+    df_all = pd.DataFrame(rows)
+    if not df_all.empty:
+        csv_data = df_all.to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button(
+            "📥 Download Analytics CSV",
+            csv_data,
+            "all_attempts.csv",
+            "text/csv",
+            key='download-analytics-csv'
+        )
+    
     col1, col2, col3 = st.columns(3)
     
     total_attempts = len(rows)
@@ -153,45 +183,6 @@ def render_dashboard(dataset):
             f'<div class="metric-card"><h3>Average Accuracy</h3><h2>{avg_pct}%</h2></div>',
             unsafe_allow_html=True,
         )
-
-    # ---------------------------------------------------------
-    # NEW STUDENT PERFORMANCE SECTION
-    # ---------------------------------------------------------
-    st.markdown('<div class="analytics-title">👨‍🎓 Student Performance Leaderboard</div>', unsafe_allow_html=True)
-    user_stats = defaultdict(lambda: {"score": 0, "total": 0, "attempts": 0})
-    for r in rows:
-        uname = r.get("user_name", "Unknown")
-        user_stats[uname]["score"] += r.get("score", 0)
-        user_stats[uname]["total"] += r.get("total", 0)
-        user_stats[uname]["attempts"] += 1
-
-    student_data = []
-    for uname, stats in user_stats.items():
-        rate = (stats["score"] / stats["total"] * 100) if stats["total"] > 0 else 0
-        student_data.append({
-            "Student": uname, 
-            "Performance Rate (%)": round(rate, 2), 
-            "Total Quizzes": stats["attempts"]
-        })
-    df_students = pd.DataFrame(student_data).sort_values("Performance Rate (%)", ascending=True)
-
-    fig_student = px.bar(
-        df_students, 
-        x="Performance Rate (%)", 
-        y="Student", 
-        orientation="h",
-        color="Performance Rate (%)",
-        hover_data=["Total Quizzes"],
-        color_continuous_scale=[[0, "#c7eceb"], [1, "#0b7285"]],
-        title="Student Performance Rate & Leaderboard"
-    )
-    fig_student.update_layout(coloraxis_showscale=False, showlegend=False)
-    fig_student.update_traces(marker_line_color="#0f2f3a", marker_line_width=0.5)
-    style_figure(fig_student)
-
-    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-    st.plotly_chart(fig_student, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------------------------------------------------
     # NEW DAILY ACTIVITY TIMELINE

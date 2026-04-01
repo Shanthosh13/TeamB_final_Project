@@ -10,23 +10,12 @@ from pathlib import Path
 import pandas as pd
 import pdfplumber
 import plotly.express as px
+import os
+import requests
+from dotenv import load_dotenv
 import streamlit as st
+load_dotenv()
 from docx import Document
-try:
-    from moviepy import VideoFileClip
-except ImportError:
-    try:
-        from moviepy.editor import VideoFileClip
-    except ImportError:
-        VideoFileClip = None
-try:
-    from pydub import AudioSegment
-except ImportError:
-    AudioSegment = None
-try:
-    import speech_recognition as sr
-except ImportError:
-    sr = None
 try:
     import pytesseract
 except ImportError:
@@ -56,10 +45,40 @@ STOPWORDS = {
     "than", "then", "there", "their", "them", "they", "you", "your", "we", "our", "he", "she"
 }
 
-HAS_MOVIEPY = VideoFileClip is not None
-HAS_PYDUB = AudioSegment is not None
-HAS_SR = sr is not None
 HAS_OCR = pytesseract is not None and convert_from_bytes is not None
+
+
+def play_sound(sound_type):
+    """Injects HTML to play sounds based on event."""
+    sounds = {
+        "correct": "https://www.soundjay.com/buttons/sounds/button-3.mp3",
+        "wrong": "https://www.soundjay.com/buttons/sounds/button-10.mp3",
+        "finish": "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3",
+    }
+    url = sounds.get(sound_type)
+    if url:
+        st.markdown(
+            f'<audio autoplay><source src="{url}" type="audio/mpeg"></audio>',
+            unsafe_allow_html=True
+        )
+
+
+def show_confetti():
+    """Triggers confetti animation using JavaScript."""
+    st.markdown(
+        """
+        <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+        <script>
+            confetti({
+                particleCount: 150,
+                spread: 70,
+                origin: { y: 0.6 },
+                colors: ['#006d77', '#0a9396', '#94d2bd', '#e9d8a6']
+            });
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 def normalize_text(text):
@@ -78,6 +97,9 @@ def extract_keywords(text, top_k=80):
     words = re.findall(r"[A-Za-z][A-Za-z\-]{2,}", text.lower())
     words = [word for word in words if word not in STOPWORDS]
     return [item[0] for item in Counter(words).most_common(top_k)]
+
+
+
 
 
 def text_from_pdf(file_bytes):
@@ -112,50 +134,7 @@ def text_from_docx(file_bytes):
     return "\n".join(lines)
 
 
-def transcribe_audio(file_bytes, suffix):
-    if sr is None:
-        raise RuntimeError("Audio transcription needs SpeechRecognition. Install it with: pip install SpeechRecognition")
-    recognizer = sr.Recognizer()
-    with tempfile.TemporaryDirectory() as temp_dir:
-        src = Path(temp_dir) / f"input{suffix}"
-        wav = Path(temp_dir) / "audio.wav"
-        src.write_bytes(file_bytes)
 
-        if suffix.lower() != ".wav":
-            if AudioSegment is None:
-                raise RuntimeError("MP3 transcription needs pydub. Install it with: pip install pydub")
-            audio = AudioSegment.from_file(src)
-            audio.export(wav, format="wav")
-            source_path = wav
-        else:
-            source_path = src
-
-        with sr.AudioFile(str(source_path)) as source:
-            audio_data = recognizer.record(source)
-            return recognizer.recognize_google(audio_data)
-
-
-def transcribe_video(file_bytes, suffix):
-    if VideoFileClip is None:
-        raise RuntimeError("Video transcription needs moviepy. Install it with: pip install moviepy")
-    if sr is None:
-        raise RuntimeError("Video transcription needs SpeechRecognition. Install it with: pip install SpeechRecognition")
-    recognizer = sr.Recognizer()
-    with tempfile.TemporaryDirectory() as temp_dir:
-        video_path = Path(temp_dir) / f"video{suffix}"
-        audio_path = Path(temp_dir) / "video_audio.wav"
-        video_path.write_bytes(file_bytes)
-
-        clip = VideoFileClip(str(video_path))
-        if clip.audio is None:
-            clip.close()
-            return ""
-        clip.audio.write_audiofile(str(audio_path), logger=None)
-        clip.close()
-
-        with sr.AudioFile(str(audio_path)) as source:
-            audio_data = recognizer.record(source)
-            return recognizer.recognize_google(audio_data)
 
 
 def pick_answer_token(sentence):
@@ -225,7 +204,6 @@ def build_true_false(sentence, keyword_bank, difficulty):
     }
 
 
-def build_short_answer(sentence, difficulty):
     return {
         "question": f"Explain briefly: {sentence}",
         "options": [],
@@ -290,10 +268,6 @@ def extract_input_text(input_mode, typed_text, uploaded_file):
         return normalize_text(text_from_pdf(file_bytes)), source_name
     if suffix == ".docx":
         return normalize_text(text_from_docx(file_bytes)), source_name
-    if suffix in {".wav", ".mp3"}:
-        return normalize_text(transcribe_audio(file_bytes, suffix)), source_name
-    if suffix == ".mp4":
-        return normalize_text(transcribe_video(file_bytes, suffix)), source_name
     return "", source_name
 
 
@@ -311,6 +285,12 @@ if "current_q" not in st.session_state:
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
+
+if "landing_done" not in st.session_state:
+    st.session_state.landing_done = False
+
+if "auth_mode_choice" not in st.session_state:
+    st.session_state.auth_mode_choice = "Login"
 
 st.markdown(
     """
@@ -357,19 +337,42 @@ st.markdown(
         }
 
         .main .block-container {
-            max-width: 1180px;
-            background: rgba(255, 255, 255, 0.7);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.7);
+            max-width: 1200px;
+            background: rgba(255, 255, 255, 0.65);
+            backdrop-filter: blur(25px) saturate(180%);
+            -webkit-backdrop-filter: blur(25px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.5);
             border-radius: var(--radius-xl);
-            box-shadow: var(--shadow-sm);
-            padding: clamp(1rem, 2vw, 2.2rem) clamp(1rem, 2.3vw, 2.4rem) clamp(1.2rem, 2.6vw, 2.6rem) !important;
-            margin-top: clamp(0.6rem, 1.1vw, 1rem);
-            margin-bottom: clamp(0.7rem, 1.1vw, 1rem);
-            animation: fadeInScale 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+            padding: clamp(1.2rem, 2.5vw, 2.5rem) clamp(1rem, 2.5vw, 2.8rem) !important;
+            margin-top: 1.5rem;
+            margin-bottom: 2rem;
+            animation: fadeInScale 0.8s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
+        h1, h2, h3 { animation: fadeInDown 0.6s ease-out; }
+        
+        .card { 
+            animation: simpleFade 1s ease-out;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+        }
+
+        .stButton>button {
+            transition: all 0.2s ease !important;
+            border-radius: 12px !important;
+        }
+        .stButton>button:hover {
+            transform: scale(1.02);
+            box-shadow: 0 5px 15px rgba(0, 109, 119, 0.2);
+        }
+
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-15px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes simpleFade {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
         @keyframes fadeInScale {
             from { opacity: 0; transform: scale(0.98) translateY(10px); }
             to { opacity: 1; transform: scale(1) translateY(0); }
@@ -386,21 +389,36 @@ st.markdown(
         }
 
         .card {
-            background: rgba(255, 255, 255, 0.8);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.6);
+            background: rgba(255, 255, 255, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.8);
             border-radius: var(--radius-lg);
-            padding: 1.5rem;
-            box-shadow: var(--shadow-sm);
+            padding: 1.8rem;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.04);
             margin-bottom: 1.5rem;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 4px;
+            background: linear-gradient(90deg, var(--brand), var(--brand-2));
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
 
         .card:hover {
-            transform: translateY(-4px);
-            box-shadow: var(--shadow-lg);
-            border-color: var(--brand-2);
+            transform: translateY(-8px);
+            box-shadow: 0 20px 40px rgba(0, 109, 119, 0.12);
+            border-color: var(--brand-soft);
             background: rgba(255, 255, 255, 0.95);
+        }
+
+        .card:hover::before {
+            opacity: 1;
         }
 
         .feature-card {
@@ -551,15 +569,16 @@ st.markdown(
         }
 
         [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #ffffff, #f5f9fc);
+            background: #ffffff;
             border-right: 1px solid var(--line);
+            box-shadow: 10px 0 30px rgba(0, 0, 0, 0.02);
         }
 
         [data-testid="stSidebar"] .block-container {
             background: transparent;
             border: none;
             box-shadow: none;
-            padding-top: 1rem !important;
+            padding: 2rem 1.2rem !important;
         }
 
         [data-testid="stSidebar"] * {
@@ -567,15 +586,17 @@ st.markdown(
         }
 
         .user-pill {
-            display: inline-block;
-            padding: 0.14rem 0.5rem;
-            border-radius: 999px;
-            background: #dff3f4;
-            border: 1px solid #8ac8cc;
-            color: #005c64 !important;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0.5rem 1rem;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #006d77, #0a9396);
+            color: white !important;
             font-weight: 700;
-            font-size: 0.82rem;
-            line-height: 1.2;
+            font-size: 0.9rem;
+            box-shadow: 0 4px 12px rgba(0, 109, 119, 0.2);
+            margin: 1rem 0;
         }
 
         [data-testid="stMetric"] {
@@ -601,6 +622,45 @@ st.markdown(
         .stProgress > div > div > div > div {
             background: linear-gradient(90deg, #36b3a8, var(--brand));
         }
+
+
+        .leaderboard-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.4rem 0.6rem;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .leaderboard-name {
+            font-weight: 600;
+            color: var(--ink);
+        }
+
+        .leaderboard-score {
+            font-weight: 700;
+            color: var(--brand);
+        }
+
+        .score-card {
+            background: linear-gradient(135deg, #006d77 0%, #0a9396 100%);
+            color: white !important;
+            padding: 2.5rem;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 15px 35px rgba(0, 109, 119, 0.3);
+            margin-bottom: 2rem;
+            animation: slideUp 0.6s ease-out;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .score-card h1 { color: white !important; font-size: 3.5rem; margin: 0; }
+        .score-card p { color: rgba(255,255,255,0.9) !important; font-size: 1.2rem; margin-top: 0.5rem; }
+        .score-card .stars { font-size: 2rem; margin-bottom: 1rem; color: #ffca28; }
 
         .stAlert {
             border-radius: var(--radius-md);
@@ -673,6 +733,33 @@ st.markdown(
             h2 { font-size: 1.25rem; }
             h3 { font-size: 1.08rem; }
         }
+
+        /* Interactive Sidebar Nav */
+        div[data-testid="stSidebar"] [data-testid="stButton"] button {
+            background: transparent !important;
+            color: var(--text) !important;
+            border: 1px solid transparent !important;
+            box-shadow: none !important;
+            text-align: left !important;
+            justify-content: flex-start !important;
+            padding: 10px 15px !important;
+            font-weight: 600 !important;
+            border-radius: 12px !important;
+            transition: all 0.3s ease !important;
+            width: 100% !important;
+        }
+
+        div[data-testid="stSidebar"] [data-testid="stButton"] button:hover {
+            background: var(--brand-soft) !important;
+            color: var(--brand) !important;
+            transform: translateX(5px) !important;
+        }
+
+        /* We will inject a special class or use a data attribute if possible, 
+           but since streamlit doesn't allow it, we style the "Active" one 
+           differently by checking session state and conditional rendering 
+           is hard with CSS alone. So we use a divider or highlight in the button label. */
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -681,9 +768,234 @@ st.markdown(
 
 
 if st.session_state.auth_user is None:
-    st.markdown("<h1 class='bounce-title' style='text-align: center; margin-bottom: 0.5rem;'>🧠 SmartQuizzer Pro</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #4a5f6b; margin-bottom: 2rem;'>The ultimate AI-powered study companion.</p>", unsafe_allow_html=True)
-    auth_mode = st.radio("Access Mode", ["Login", "Register"], horizontal=True, label_visibility="collapsed")
+    if not st.session_state.landing_done:
+        # Immersive Hero Section
+        st.markdown(
+            """
+            <div class="hero-container">
+                <div class="hero-content">
+                    <div class="hero-badge">✨ VERSION 2.0 IS LIVE</div>
+                    <h1 class="hero-title">SmartQuizzer <span class="hero-accent">Pro</span></h1>
+                    <p class="hero-subtitle">The Intelligent Learning Platform for Masterful Knowledge Retention.</p>
+                    <div class="hero-stats">
+                        <div class="stat-item"><b>AI</b> Powered</div>
+                        <div class="stat-separator">/</div>
+                        <div class="stat-item"><b>Pro</b> Analytics</div>
+                        <div class="stat-separator">/</div>
+                        <div class="stat-item"><b>Secure</b> Access</div>
+                    </div>
+                    <div class="scroll-indicator">
+                        <p>EXPLORE PLATFORM</p>
+                        <div class="chevron">↓</div>
+                    </div>
+                </div>
+            </div>
+            
+            <style>
+                .hero-container {
+                    height: 90vh;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    text-align: center;
+                    position: relative;
+                    margin: -1.5rem 0 2rem 0;
+                    border-radius: 40px;
+                    overflow: hidden;
+                    background: #ffffff;
+                }
+
+                /* Animated Mesh Background */
+                .hero-container::before {
+                    content: '';
+                    position: absolute;
+                    top: -50%; left: -50%;
+                    width: 200%; height: 200%;
+                    background: 
+                        radial-gradient(circle at 75% 25%, rgba(0, 109, 119, 0.1) 0%, transparent 40%),
+                        radial-gradient(circle at 25% 75%, rgba(10, 147, 150, 0.08) 0%, transparent 40%),
+                        radial-gradient(circle at 50% 50%, rgba(148, 210, 189, 0.1) 0%, transparent 50%);
+                    animation: meshMove 20s infinite alternate linear;
+                    z-index: 1;
+                }
+
+                @keyframes meshMove {
+                    0% { transform: translate(0, 0) rotate(0deg); }
+                    100% { transform: translate(5%, 5%) rotate(5deg); }
+                }
+
+                .hero-content {
+                    position: relative;
+                    z-index: 2;
+                    padding: 3rem;
+                    max-width: 900px;
+                }
+
+                .hero-badge {
+                    display: inline-block;
+                    padding: 6px 16px;
+                    background: var(--brand-soft);
+                    color: var(--brand);
+                    font-size: 0.75rem;
+                    font-weight: 800;
+                    border-radius: 99px;
+                    letter-spacing: 1.5px;
+                    margin-bottom: 2rem;
+                    animation: fadeInUp 0.8s ease-out;
+                }
+
+                .hero-title {
+                    font-size: clamp(3.5rem, 8vw, 5.8rem) !important;
+                    margin: 0 !important;
+                    font-weight: 800 !important;
+                    letter-spacing: -2px !important;
+                    line-height: 1 !important;
+                    animation: fadeInUp 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+                }
+
+                .hero-accent {
+                    background: linear-gradient(135deg, var(--brand), var(--brand-2));
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    font-weight: 300;
+                }
+
+                .hero-subtitle {
+                    font-size: clamp(1.1rem, 2vw, 1.45rem) !important;
+                    color: var(--muted) !important;
+                    font-weight: 500 !important;
+                    margin-top: 1.5rem !important;
+                    animation: fadeInUp 1s 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+                }
+
+                .hero-stats {
+                    display: flex;
+                    justify-content: center;
+                    gap: 15px;
+                    margin-top: 3rem;
+                    color: var(--text);
+                    font-size: 0.9rem;
+                    animation: fadeInUp 1s 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+                }
+
+                .stat-separator { opacity: 0.3; }
+
+                .scroll-indicator {
+                    margin-top: 6rem;
+                    opacity: 0.6;
+                    animation: bounce 2s infinite;
+                }
+
+                .scroll-indicator p {
+                    font-size: 0.75rem;
+                    font-weight: 800;
+                    color: var(--brand);
+                    letter-spacing: 3px;
+                }
+
+                .chevron {
+                    font-size: 2rem;
+                    color: var(--brand-2);
+                    margin-top: -10px;
+                }
+
+                @keyframes fadeInUp {
+                    from { opacity: 0; transform: translateY(30px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+
+                .main .block-container {
+                    background: transparent !important;
+                    box-shadow: none !important;
+                    border: none !important;
+                    padding-top: 0 !important;
+                }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.divider()
+        
+        # Login/Register Selection Area
+        # Dashboard Options with Visual Impact
+        st.markdown("<div style='height: 5vh;'></div>", unsafe_allow_html=True)
+        
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            st.markdown("""
+                <div style='text-align: center; margin-bottom: 1.5rem;'>
+                    <h3 style='margin-bottom: 0.5rem;'>Returning Master?</h3>
+                    <p style='color: var(--muted); font-size: 0.9rem;'>Pick up where you left off</p>
+                </div>
+            """, unsafe_allow_html=True)
+            if st.button("🚀 Access Your Dashboard", type="primary", use_container_width=True):
+                st.session_state.auth_mode_choice = "Login"
+                st.session_state.landing_done = True
+                st.rerun()
+        with btn_col2:
+            st.markdown("""
+                <div style='text-align: center; margin-bottom: 1.5rem;'>
+                    <h3 style='margin-bottom: 0.5rem;'>New Scholar?</h3>
+                    <p style='color: var(--muted); font-size: 0.9rem;'>Start your journey today</p>
+                </div>
+            """, unsafe_allow_html=True)
+            if st.button("✨ Initialize Account", use_container_width=True):
+                st.session_state.auth_mode_choice = "Register"
+                st.session_state.landing_done = True
+                st.rerun()
+
+        # Premium Footer
+        st.markdown("""
+            <div style='margin-top: 10rem; text-align: center; padding: 4rem 2rem; border-top: 1px solid var(--line);'>
+                <p style='font-weight: 800; color: var(--brand); letter-spacing: 2px; font-size: 0.75rem; margin-bottom: 1rem;'>JOIN THE FUTURE OF LEARNING</p>
+                <div style='display: flex; justify-content: center; gap: 20px; font-size: 1.5rem; opacity: 0.5; margin-bottom: 2rem;'>
+                    <span>🧪</span><span>🎯</span><span>📈</span><span>🔐</span>
+                </div>
+                <p style='color: var(--muted); font-size: 0.85rem;'>© 2024 SmartQuizzer Pro. All rights reserved.</p>
+                <p style='color: var(--muted); font-size: 0.75rem; margin-top: 0.5rem;'>Empowering students through AI-driven education.</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # Feature Showcase integrated into landing page
+        st.markdown("<div style='height: 15vh;'></div>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center; margin-bottom: 2rem;'>🚀 Core Platform Features</h3>", unsafe_allow_html=True)
+        feat_col1, feat_col2 = st.columns(2)
+        with feat_col1:
+            st.markdown("""
+                <div class='card feature-card'>
+                    <h4>🧠 Smart Extraction</h4>
+                    <p>Upload PDF, DOCX, or even Scanned Images. Our AI handles the heavy lifting of reading and understanding your material.</p>
+                </div>
+                <div class='card feature-card'>
+                    <h4>📊 Interactive Analytics</h4>
+                    <p>Track your accuracy, speed, and topic-wise strengths with our pro-level dashboard.</p>
+                </div>
+            """, unsafe_allow_html=True)
+        with feat_col2:
+            st.markdown("""
+                <div class='card feature-card'>
+                    <h4>👨‍🏫 Teacher Mode</h4>
+                    <p>Effortlessly create assessment materials and interactive quizzes for students based on lesson plans.</p>
+                </div>
+                <div class='card feature-card'>
+                    <h4>⚡ Instant Feedback</h4>
+                    <p>Receive immediate scoring and explanations. Identify your weak points instantly.</p>
+                </div>
+            """, unsafe_allow_html=True)
+        
+        st.stop()
+
+    # If landing is done, show the actual Login/Register form
+    if st.button("← Back to Home", use_container_width=False):
+        st.session_state.landing_done = False
+        st.rerun()
+    # Re-using the existing logic but respecting the choice
+    auth_mode = st.radio("Access Mode", ["Login", "Register"], 
+                         index=0 if st.session_state.auth_mode_choice == "Login" else 1,
+                         horizontal=True, label_visibility="collapsed")
+    
     if auth_mode == "Login":
         with st.form("login_form", clear_on_submit=False):
             login_username = st.text_input("Username", key="login_username")
@@ -699,17 +1011,24 @@ if st.session_state.auth_user is None:
                     st.error("Invalid username or password.")
     else:
         with st.form("register_form", clear_on_submit=False):
-            reg_username = st.text_input("Create Username", key="register_username")
-            reg_password = st.text_input("Create Password", type="password", key="register_password")
+            st.subheader("Create New Account")
+            reg_username = st.text_input("Username", key="register_username")
+            reg_password = st.text_input("Password", type="password", key="register_password")
             reg_confirm = st.text_input("Confirm Password", type="password", key="register_confirm")
+            
             register_submit = st.form_submit_button("Register", use_container_width=True)
+            
             if register_submit:
                 if reg_password != reg_confirm:
                     st.error("Passwords do not match.")
+                elif not reg_username.strip():
+                    st.error("Username cannot be empty.")
                 else:
-                    ok, message = register_user(reg_username, reg_password)
+                    ok, message = register_user(reg_username, reg_password, None)
                     if ok:
-                        st.success("Registration successful. Please login.")
+                        st.success("Registration successful! You can now log in.")
+                        st.session_state.auth_mode_choice = "Login"
+                        st.rerun()
                     else:
                         st.error(message)
 
@@ -733,8 +1052,8 @@ if st.session_state.auth_user is None:
     with feat_col2:
         st.markdown("""
             <div class='card feature-card'>
-                <h4>🎙️ Media-to-Quiz</h4>
-                <p>Turn MP3 audio recordings or MP4 lectures directly into interactive quizzes. Perfect for studying on the go!</p>
+                <h4>👨‍🏫 Teacher Mode</h4>
+                <p>Effortlessly create assessment materials and interactive quizzes for students based on lesson plans.</p>
             </div>
             <div class='card feature-card'>
                 <h4>⚡ Instant Feedback</h4>
@@ -745,81 +1064,235 @@ if st.session_state.auth_user is None:
     st.stop()
 
 if "menu_selection" not in st.session_state:
-    st.session_state.menu_selection = "Generate Quiz"
+    st.session_state.menu_selection = "Home"
 
-def update_menu():
-    st.session_state.menu_selection = st.session_state.menu_radio
+menu_opts = {
+    "Home": "🏠",
+    "Generate Quiz": "📄",
+    "Take Quiz": "🧠",
+    "Analytics Dashboard": "📊"
+}
 
-menu_opts = ["Generate Quiz", "Take Quiz", "Analytics Dashboard"]
-curr_idx = menu_opts.index(st.session_state.menu_selection) if st.session_state.menu_selection in menu_opts else 0
+st.sidebar.markdown("### 🧭 Navigation")
+for opt, icon in menu_opts.items():
+    is_active = st.session_state.menu_selection == opt
+    label = f"{icon} {opt}"
+    
+    # Active item styling logic
+    if is_active:
+        st.sidebar.markdown(f"""
+            <style>
+                div[data-testid="stSidebar"] [data-testid="stButton"] button:has(div:contains('{label}')) {{
+                    background: linear-gradient(135deg, var(--brand), var(--brand-2)) !important;
+                    color: white !important;
+                    box-shadow: 0 4px 15px rgba(0, 109, 119, 0.2) !important;
+                }}
+            </style>
+        """, unsafe_allow_html=True)
+    
+    if st.sidebar.button(label, key=f"nav_{opt}", use_container_width=True):
+        st.session_state.menu_selection = opt
+        st.rerun()
 
-menu = st.sidebar.radio("Navigate", menu_opts, index=curr_idx, key="menu_radio", on_change=update_menu)
+menu = st.session_state.menu_selection
 candidate = st.session_state.auth_user
-history = load_attempts(limit=200)
+history = load_attempts(limit=200, user_name=candidate)
 
 with st.sidebar:
     st.markdown(f"**Logged in as:** <span class='user-pill'>{candidate}</span>", unsafe_allow_html=True)
     if st.button("Logout", use_container_width=True):
         st.session_state.auth_user = None
         st.session_state.answers = {}
-        st.session_state.quiz_submitted = False
+        st.session_state.landing_done = False
         st.rerun()
     st.markdown("### Performance Snapshot")
-    tests_taken = history["tests_taken"]
-    avg_accuracy = round(sum(history["percentages"]) / len(history["percentages"]), 2) if history["percentages"] else 0.0
+    tests_taken = history.get("tests_taken", 0)
+    if history.get("percentages"):
+        p_list = history["percentages"]
+        avg_v = float(sum(p_list)) / len(p_list)
+        avg_accuracy = f"{avg_v:.1f}"
+    else:
+        avg_accuracy = "0.0"
     st.metric("Attempts", tests_taken)
     st.metric("Average Accuracy", f"{avg_accuracy}%")
 
-if menu == "Generate Quiz":
-    st.header("📄 Upload Study Material")
-    st.write("Upload your notes or paste text to generate a quiz easily.")
+    # Top Performers section removed as per privacy request
+
+if menu == "Home":
+    st.markdown(f"""
+        <div style='display: flex; align-items: center; gap: 20px; margin-bottom: 2rem;'>
+            <div style='font-size: 3rem;'>👋</div>
+            <div>
+                <h1 style='margin:0;'>Welcome, {candidate}!</h1>
+                <p style='color: var(--muted); font-size: 1.1rem;'>Ready for today's learning challenge?</p>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Hero Summary Card
+    st.markdown(f"""
+        <div class="score-card" style="padding: 2rem; background: linear-gradient(135deg, #006d77, #0a9396); border-radius: 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="text-align: left;">
+                    <p style="text-transform: uppercase; letter-spacing: 2px; font-size: 0.9rem; opacity: 0.9; color: white !important;">Overall Performance</p>
+                    <h1 style="font-size: 4rem; color: white !important;">{avg_accuracy}%</h1>
+                    <p style="color: rgba(255,255,255,0.8) !important;">Across total {tests_taken} attempts</p>
+                </div>
+                <div style="font-size: 5rem; opacity: 0.2; color: white !important;">🎯</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+    st.markdown("### 🚀 Quick Actions")
+    
+    qa_col1, qa_col2, qa_col3 = st.columns(3)
+    
+    with qa_col1:
+        st.markdown("""
+            <div class='card' style='height: 100%;'>
+                <div style='font-size: 2.5rem; margin-bottom: 1rem;'>📄</div>
+                <h4 style='color: var(--brand) !important;'>New Quiz</h4>
+                <p style='font-size: 0.9rem; color: var(--muted) !important;'>Upload notes and generate AI questions instantly.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("Start Extraction"):
+            st.session_state.menu_selection = "Generate Quiz"
+            st.rerun()
+
+    with qa_col2:
+        st.markdown("""
+            <div class='card' style='height: 100%;'>
+                <div style='font-size: 2.5rem; margin-bottom: 1rem;'>🧠</div>
+                <h4 style='color: var(--brand-2) !important;'>Resume Test</h4>
+                <p style='font-size: 0.9rem; color: var(--muted) !important;'>Take your most recently generated quiz again.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("Jump to Quiz"):
+            st.session_state.menu_selection = "Take Quiz"
+            st.rerun()
+
+    with qa_col3:
+        st.markdown("""
+            <div class='card' style='height: 100%;'>
+                <div style='font-size: 2.5rem; margin-bottom: 1rem;'>📈</div>
+                <h4 style='color: #0b7285 !important;'>Insights</h4>
+                <p style='font-size: 0.9rem; color: var(--muted) !important;'>Detailed breakdown of your strengths and weaknesses.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("View Analytics"):
+            st.session_state.menu_selection = "Analytics Dashboard"
+            st.rerun()
+
+    st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+    # Global leaderboard removed as per request for private-only performance
+
+
+elif menu == "Generate Quiz":
+    st.markdown(f"""
+        <div style='display: flex; align-items: center; gap: 15px; margin-bottom: 0.5rem;'>
+            <div style='font-size: 2.2rem;'>📄</div>
+            <h1 style='margin:0;'>Prepare Your Material</h1>
+        </div>
+        <p style='color: var(--muted); font-size: 1rem; margin-bottom: 2rem;'>Transform your study notes, documents, or media into a custom-tailored quiz.</p>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 📥 Choose Input Mode")
+    
+    # Styled Input Selection
+    input_mode_col1, input_mode_col2 = st.columns(2)
+    
+    # We use session state to track the mode because we want custom buttons
+    if "input_mode_choice" not in st.session_state:
+        st.session_state.input_mode_choice = "Upload File"
+
+    with input_mode_col1:
+        is_pasted = st.session_state.input_mode_choice == "Paste Text"
+        active_style = "border: 2px solid var(--brand); background: var(--brand-soft); transform: translateY(-3px);" if is_pasted else ""
+        st.markdown(f"""
+            <div class='card' style='padding: 1.5rem; text-align: center; {active_style}'>
+                <div style='font-size: 2.5rem; margin-bottom: 0.8rem;'>✍️</div>
+                <h4 style='margin:0;'>Paste Text</h4>
+                <p style='font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem;'>Manually write or paste content</p>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("Use Text Editor", key="mode_pasted", use_container_width=True):
+            st.session_state.input_mode_choice = "Paste Text"
+            st.rerun()
+
+    with input_mode_col2:
+        is_uploaded = st.session_state.input_mode_choice == "Upload File"
+        active_style = "border: 2px solid var(--brand); background: var(--brand-soft); transform: translateY(-3px);" if is_uploaded else ""
+        st.markdown(f"""
+            <div class='card' style='padding: 1.5rem; text-align: center; {active_style}'>
+                <div style='font-size: 2.5rem; margin-bottom: 0.8rem;'>📎</div>
+                <h4 style='margin:0;'>Upload File</h4>
+                <p style='font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem;'>PDF, DOCX, Audio, or Video</p>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("Use File Uploader", key="mode_uploaded", use_container_width=True):
+            st.session_state.input_mode_choice = "Upload File"
+            st.rerun()
+
     st.divider()
-    st.subheader("📥 Input Content")
-    input_mode = st.radio("Select Input Type", ["Paste Text", "Upload File"], horizontal=True)
+    
     typed_text = ""
     uploaded = None
 
-    if input_mode == "Paste Text":
-        typed_text = st.text_area(
-            "Paste learning content",
-            height=220,
-            placeholder="Paste chapters, notes, or transcript text here...",
-        )
+    if st.session_state.input_mode_choice == "Paste Text":
+        with st.container():
+            st.markdown("#### 📝 Edit Your Content")
+            typed_text = st.text_area(
+                "hidden_label",
+                height=300,
+                placeholder="Paste chapters, notes, or transcript text here to begin...",
+                label_visibility="collapsed",
+            )
     else:
-        upload_types = ["pdf", "docx", "wav"]
-        if HAS_PYDUB and HAS_SR:
-            upload_types.append("mp3")
-        if HAS_MOVIEPY and HAS_SR:
-            upload_types.append("mp4")
+        with st.container():
+            st.markdown("#### 📁 Select Your Document")
+            upload_types = ["pdf", "docx"]
 
-        uploaded = st.file_uploader(
-            "Upload source file",
-            type=upload_types,
-            help=f"Supported formats now: {', '.join(ext.upper() for ext in upload_types)}",
-        )
-        missing_features = []
-        if not HAS_PYDUB:
-            missing_features.append("MP3 support needs pydub")
-        if not HAS_MOVIEPY:
-            missing_features.append("MP4 support needs moviepy")
-        if not HAS_SR:
-            missing_features.append("Audio/Video transcription needs SpeechRecognition")
-        if missing_features:
-            st.info("Optional features disabled: " + " | ".join(missing_features))
-        if not HAS_OCR:
-            st.caption("Scanned PDF OCR is disabled. Install `pytesseract` and `pdf2image` to enable it.")
+            uploaded = st.file_uploader(
+                "hidden_label",
+                type=upload_types,
+                help=f"Supported: {', '.join(ext.upper() for ext in upload_types)}",
+                label_visibility="collapsed",
+            )
+            
+            # Formats visual summary
+            st.markdown(f"""
+                <div style='display: flex; gap: 8px; flex-wrap: wrap; margin-top: 1rem;'>
+                    {" ".join([f"<span style='background: #eef2f5; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; color: #4a5f6b; font-weight: 700;'>{ext.upper()}</span>" for ext in upload_types])}
+                </div>
+            """, unsafe_allow_html=True)
 
-    st.subheader("⚙️ Quiz Settings")
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
-    with ctrl_col1:
-        question_count = st.slider("Number of questions", min_value=3, max_value=25, value=8)
-    with ctrl_col2:
-        difficulty = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
-    with ctrl_col3:
-        question_type = st.selectbox(
-            "Question type",
-            ["Multiple Choice Questions (MCQ)", "True/False", "Short Answer"],
-        )
+            if not HAS_OCR:
+                st.caption("ℹ️ Scanned PDF OCR is disabled. Install `pytesseract` and `pdf2image` to enable it.")
+
+    st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+    st.markdown("### ⚙️ Finalize Configuration")
+    
+    with st.container():
+        st.markdown("<div class='card' style='padding: 2rem; border-color: rgba(0, 109, 119, 0.1);'>", unsafe_allow_html=True)
+        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
+        with ctrl_col1:
+            st.markdown("**🔢 Total Questions**")
+            question_count = st.slider("questions_slider", min_value=3, max_value=25, value=8, label_visibility="collapsed")
+            st.caption(f"Target: {question_count} items")
+        with ctrl_col2:
+            st.markdown("**🎯 Complexity**")
+            difficulty = st.selectbox("diff_select", ["Easy", "Medium", "Hard"], label_visibility="collapsed")
+        with ctrl_col3:
+            st.markdown("**📋 Question Mode**")
+            question_type = st.selectbox(
+                "type_select",
+                ["Multiple Choice Questions (MCQ)", "True/False", "Short Answer"],
+                label_visibility="collapsed",
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    input_mode = st.session_state.input_mode_choice
 
     if st.button("🚀 Generate Quiz", type="primary", use_container_width=True):
         with st.status("🛠️ Building your quiz...", expanded=True) as status_box:
@@ -871,6 +1344,7 @@ if menu == "Generate Quiz":
                     )
                     st.session_state.answers = {}
                     st.session_state.quiz_submitted = False
+                    st.session_state.current_q = 0
                     progress.progress(100)
                     status_box.update(label="🚀 Quiz Ready!", state="complete", expanded=False)
                     st.success(f"Quiz generated successfully. Heading to 'Take Quiz'!")
@@ -902,14 +1376,15 @@ elif menu == "Take Quiz":
         idx = st.session_state.current_q
         question = questions[idx]
 
+
         # Progress
         st.markdown(f"### 📝 Question {idx + 1} / {len(questions)}")
         st.progress((idx + 1) / len(questions))
 
         st.divider()
         with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.markdown(f"**{question['question']}**")
+            st.markdown('<div class="card quiz-question-card">', unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:1.25rem; font-weight:700; margin-bottom:1.5rem; color:var(--ink);'>{question['question']}</div>", unsafe_allow_html=True)
             
             # Question Input logic based on type
             q_type = question["type"]
@@ -921,10 +1396,11 @@ elif menu == "Take Quiz":
                     index = None
                 
                 choice = st.radio(
-                    "Choose one:",
+                    "Select the correct option:",
                     question["options"],
                     index=index,
-                    key=f"q_radio_{idx}"
+                    key=f"q_radio_{idx}",
+                    label_visibility="collapsed"
                 )
                 st.session_state.answers[idx] = choice
             
@@ -940,7 +1416,8 @@ elif menu == "Take Quiz":
                     "True or False?",
                     ["True", "False"],
                     index=index,
-                    key=f"q_tf_{idx}"
+                    key=f"q_tf_{idx}",
+                    label_visibility="collapsed"
                 )
                 st.session_state.answers[idx] = choice
             
@@ -948,7 +1425,8 @@ elif menu == "Take Quiz":
                 ans = st.text_area(
                     "Your Answer:",
                     value=st.session_state.answers.get(idx, ""),
-                    key=f"q_sa_{idx}"
+                    key=f"q_sa_{idx}",
+                    placeholder="Type your explanation here..."
                 )
                 st.session_state.answers[idx] = ans
             st.markdown('</div>', unsafe_allow_html=True)
@@ -963,17 +1441,16 @@ elif menu == "Take Quiz":
                     st.rerun()
 
         with col2:
-            if st.button("Next ➡️"):
-                if idx < len(questions) - 1:
+            if idx < len(questions) - 1:
+                if st.button("Next ➡️"):
                     st.session_state.current_q += 1
                     st.rerun()
-
-        # Submit only on last question
-        if idx == len(questions) - 1:
-            if st.button("🚀 Submit Quiz", type="primary"):
+            else:
+                submit_button = st.button("🚀 Submit Quiz", type="primary")
 
                 score = 0
                 details = []
+                weak_areas = []
                 difficulty_totals = defaultdict(lambda: {"correct": 0, "total": 0})
 
                 for i, q in enumerate(questions):
@@ -1006,32 +1483,49 @@ elif menu == "Take Quiz":
                 # Reset
                 st.session_state.current_q = 0
 
-                st.success("Quiz Submitted!")
-                st.balloons()
+                # Styled Score Card
+                stars = "⭐" * (int(percent // 20))
+                st.markdown(f"""
+                    <div class="score-card">
+                        <div class="stars">{stars}</div>
+                        <p>YOUR FINAL SCORE</p>
+                        <h1>{percent}%</h1>
+                        <p>{score} out of {len(questions)} correct</p>
+                    </div>
+                """, unsafe_allow_html=True)
 
-                # Metrics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Score", f"{score}/{len(questions)}")
-                with col2:
-                    st.metric("Accuracy", f"{percent}%")
-                with col3:
-                    st.metric("Wrong", len(questions) - score)
+                # Action Buttons
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    df_results = pd.DataFrame(details)
+                    csv = df_results.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "📥 Download Result (CSV)",
+                        csv,
+                        f"quiz_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        "text/csv",
+                        use_container_width=True
+                    )
+                with btn_col2:
+                    if st.button("🔄 Retake Quiz", use_container_width=True):
+                        st.session_state.answers = {}
+                        st.session_state.current_q = 0
+                        st.rerun()
 
                 # Feedback
                 if percent >= 80:
-                    st.balloons()
-                    st.success("🔥 Excellent performance!")
+                    show_confetti()
+                    play_sound("finish")
+                    st.success("🔥 Excellent performance! You're a pro!")
                 elif percent >= 50:
-                    st.info("👍 Good, but can improve.")
+                    st.info("👍 Good job! With a bit more practice, you'll be perfect.")
                 else:
-                    st.warning("⚠️ Needs improvement.")
+                    st.warning("⚠️ Keep pushing! Review the material and try again.")
 
                 # Weak Areas
-                weak_areas = []
                 for diff, stats in difficulty_totals.items():
                     if stats["correct"] / stats["total"] < 0.5:
-                        weak_areas.append(diff)
+                        weak_areas.append(diff.title())
 
                 if weak_areas:
                     st.warning(f"⚠️ Weak in: {', '.join(weak_areas)}")
@@ -1052,5 +1546,5 @@ elif menu == "Take Quiz":
 
 elif menu == "Analytics Dashboard":
     st.subheader("Quiz Analytics Dashboard")
-    dataset = load_attempts(limit=200)
+    dataset = load_attempts(limit=200, user_name=candidate)
     render_dashboard(dataset)
